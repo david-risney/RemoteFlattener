@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using RemoteFlattener.Logging;
 using RemoteFlattener.Models;
 
 namespace RemoteFlattener.Network;
@@ -45,6 +46,12 @@ public sealed class NetworkManager : IDisposable
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
     private readonly ConcurrentDictionary<string, PeerConnection> _connections = new(StringComparer.OrdinalIgnoreCase);
+
+    // Rolling set of message IDs already processed — prevents relay loops.
+    private readonly object _seenLock = new();
+    private readonly HashSet<string> _seenMessageIds = new(StringComparer.Ordinal);
+    private const int SeenIdCap = 1000;
+
     private bool _disposed;
 
     /// <summary>The machine name of this instance (used in authentication and state messages).</summary>
@@ -71,6 +78,7 @@ public sealed class NetworkManager : IDisposable
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        AppLogger.Log($"NetworkManager starting.  Listening on port {Port}.  Outgoing peers: [{string.Join(", ", _peerMachines)}]");
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => ListenLoopAsync(_cts.Token));
         foreach (var machine in _peerMachines)
@@ -79,6 +87,7 @@ public sealed class NetworkManager : IDisposable
 
     public void Stop()
     {
+        AppLogger.Log("NetworkManager stopping.");
         _cts?.Cancel();
         _listener?.Stop();
         foreach (var conn in _connections.Values)
@@ -90,11 +99,40 @@ public sealed class NetworkManager : IDisposable
 
     public async Task BroadcastAsync(NetworkMessage message)
     {
+        PrepareForSend(message);
+        MarkSeen(message.MessageId!);
         var json = message.Serialize();
         var tasks = _connections.Values
             .Select(c => SendLineAsync(c, json))
             .ToArray();
         await Task.WhenAll(tasks);
+    }
+
+    /// <summary>
+    /// Send a message to a named machine.  If no direct connection exists, floods all peers
+    /// so intermediary nodes can relay it onward.  Sets TargetMachine automatically.
+    /// </summary>
+    public async Task SendToPeerAsync(string machineName, NetworkMessage message)
+    {
+        message.TargetMachine = machineName;
+        PrepareForSend(message);
+        MarkSeen(message.MessageId!);
+
+        if (_connections.TryGetValue(machineName, out var direct))
+        {
+            AppLogger.Log($"Sending {message.Type} directly to {machineName}.");
+            await SendLineAsync(direct, message.Serialize());
+        }
+        else
+        {
+            // No direct link — flood all peers; one of them will relay it.
+            AppLogger.Log($"No direct link to '{machineName}'; flooding {_connections.Count} peer(s) to relay.");
+            var json = message.Serialize();
+            var tasks = _connections.Values
+                .Select(c => SendLineAsync(c, json))
+                .ToArray();
+            await Task.WhenAll(tasks);
+        }
     }
 
     private static async Task SendLineAsync(PeerConnection conn, string json)
@@ -117,15 +155,22 @@ public sealed class NetworkManager : IDisposable
         {
             _listener = new TcpListener(IPAddress.Any, Port);
             _listener.Start();
+            AppLogger.Log($"Listener started on port {Port}.");
             while (!ct.IsCancellationRequested)
             {
                 var client = await _listener.AcceptTcpClientAsync(ct);
+                var remoteIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "unknown";
+                AppLogger.Log($"Incoming TCP connection from {remoteIp}.");
                 _ = Task.Run(() => HandleConnectionAsync(client, outgoing: false, remoteMachineHint: null, ct));
             }
         }
         catch (OperationCanceledException) { }
-        catch { }
-        finally { _listener?.Stop(); }
+        catch (Exception ex) { AppLogger.Log($"Listener error: {ex.Message}"); }
+        finally
+        {
+            AppLogger.Log("Listener stopped.");
+            _listener?.Stop();
+        }
     }
 
     // ── Outgoing connector (with reconnect) ──────────────────────────────────
@@ -141,15 +186,20 @@ public sealed class NetworkManager : IDisposable
                 continue;
             }
 
+            AppLogger.Log($"Outgoing: attempting connection to {machine}:{Port}...");
             try
             {
                 var client = new TcpClient();
                 await client.ConnectAsync(machine, Port, ct);
+                AppLogger.Log($"Outgoing: TCP connected to {machine}:{Port}.  Starting handshake.");
                 // HandleConnectionAsync will register in _connections; when it exits, loop retries.
                 await HandleConnectionAsync(client, outgoing: true, remoteMachineHint: machine, ct);
             }
             catch (OperationCanceledException) { return; }
-            catch { /* connection refused, name not resolved, etc. */ }
+            catch (Exception ex)
+            {
+                AppLogger.Log($"Outgoing: failed to connect to {machine}: {ex.Message}. Retrying in 5 s.");
+            }
 
             await DelayOrCancel(5_000, ct);
         }
@@ -175,14 +225,17 @@ public sealed class NetworkManager : IDisposable
                 await writer.FlushAsync();
 
                 var ackLine = await reader.ReadLineAsync(ct);
-                if (ackLine == null) return;
+                if (ackLine == null) { AppLogger.Log($"Outgoing [{remoteMachineHint}]: connection closed before HELLO_ACK."); return; }
                 var ack = NetworkMessage.Deserialize(ackLine);
                 // Verify server also knows the password via its HMAC.
                 if (ack?.Type != "HELLO_ACK" ||
                     string.IsNullOrEmpty(ack.MachineName) ||
                     string.IsNullOrEmpty(ack.Hmac) ||
                     !VerifyHmac(ack.MachineName, ack.Hmac))
+                {
+                    AppLogger.Log($"Outgoing [{remoteMachineHint}]: authentication failed (bad HELLO_ACK).");
                     return;
+                }
 
                 remoteMachine = remoteMachineHint ?? ack.MachineName;
             }
@@ -190,13 +243,16 @@ public sealed class NetworkManager : IDisposable
             {
                 // Wait for HELLO then send HELLO_ACK with our own HMAC.
                 var helloLine = await reader.ReadLineAsync(ct);
-                if (helloLine == null) return;
+                if (helloLine == null) { AppLogger.Log("Incoming: connection closed before HELLO."); return; }
                 var hello = NetworkMessage.Deserialize(helloLine);
                 if (hello?.Type != "HELLO" ||
                     string.IsNullOrEmpty(hello.MachineName) ||
                     string.IsNullOrEmpty(hello.Hmac) ||
                     !VerifyHmac(hello.MachineName, hello.Hmac))
+                {
+                    AppLogger.Log("Incoming: authentication failed (bad HELLO or wrong password).");
                     return;
+                }
 
                 remoteMachine = hello.MachineName;
                 var ack = BuildHello();
@@ -209,10 +265,12 @@ public sealed class NetworkManager : IDisposable
             var conn = new PeerConnection { MachineName = remoteMachine, Client = client, Writer = writer };
             if (!_connections.TryAdd(remoteMachine, conn))
             {
+                AppLogger.Log($"Duplicate connection for {remoteMachine} — dropping.");
                 conn.Dispose();
                 return;
             }
 
+            AppLogger.Log($"Peer {remoteMachine} authenticated and connected ({(outgoing ? "outgoing" : "incoming")}).");
             PeerConnected?.Invoke(remoteMachine);
 
             // Read messages until the connection closes.
@@ -221,12 +279,43 @@ public sealed class NetworkManager : IDisposable
                    (line = await reader.ReadLineAsync(ct)) != null)
             {
                 var msg = NetworkMessage.Deserialize(line);
-                if (msg != null)
+                if (msg == null) continue;
+
+                // Ensure every message has an ID (backward compat with older nodes).
+                if (string.IsNullOrEmpty(msg.MessageId))
+                    msg.MessageId = Guid.NewGuid().ToString("N");
+
+                if (!MarkSeen(msg.MessageId))
+                {
+                    // Already processed — drop silently to break relay loops.
+                    continue;
+                }
+
+                // Should this node act on the message?
+                bool isForMe = msg.TargetMachine == null ||
+                               msg.TargetMachine.Equals(LocalMachineName, StringComparison.OrdinalIgnoreCase);
+
+                if (isForMe)
+                {
+                    AppLogger.Log($"Received {msg.Type} from {remoteMachine} (origin: {msg.OriginMachine ?? remoteMachine}).");
                     MessageReceived?.Invoke(remoteMachine, msg);
+                }
+
+                // Relay to all other directly connected peers (mesh forwarding).
+                if (_connections.Count > 1)
+                {
+                    var relayJson = msg.Serialize();
+                    var relay = _connections.Values
+                        .Where(c => !c.MachineName.Equals(remoteMachine, StringComparison.OrdinalIgnoreCase))
+                        .Select(c => SendLineAsync(c, relayJson))
+                        .ToArray();
+                    if (relay.Length > 0)
+                        await Task.WhenAll(relay);
+                }
             }
         }
         catch (OperationCanceledException) { }
-        catch { }
+        catch (Exception ex) { AppLogger.Log($"Connection error [{remoteMachine ?? remoteMachineHint ?? "unknown"}]: {ex.Message}"); }
         finally
         {
             reader.Dispose();
@@ -234,6 +323,7 @@ public sealed class NetworkManager : IDisposable
             if (remoteMachine != null && _connections.TryRemove(remoteMachine, out var removed))
             {
                 removed.Dispose();
+                AppLogger.Log($"Peer {remoteMachine} disconnected.");
                 PeerDisconnected?.Invoke(remoteMachine);
             }
             else
@@ -245,6 +335,32 @@ public sealed class NetworkManager : IDisposable
     }
 
     // ── Authentication helpers ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Stamps OriginMachine and a fresh MessageId on the message if not already set.
+    /// Call this before sending any locally-originated message.
+    /// </summary>
+    private void PrepareForSend(NetworkMessage message)
+    {
+        message.OriginMachine ??= LocalMachineName;
+        message.MessageId     ??= Guid.NewGuid().ToString("N");
+    }
+
+    /// <summary>
+    /// Adds the ID to the seen set.  Returns true if it was new (should be processed/relayed),
+    /// false if it was already known (duplicate — drop).
+    /// </summary>
+    private bool MarkSeen(string id)
+    {
+        lock (_seenLock)
+        {
+            if (!_seenMessageIds.Add(id))
+                return false;
+            if (_seenMessageIds.Count > SeenIdCap)
+                _seenMessageIds.Clear();
+            return true;
+        }
+    }
 
     private NetworkMessage BuildHello()
     {

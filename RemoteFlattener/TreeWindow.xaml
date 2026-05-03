@@ -1,10 +1,10 @@
 <Window x:Class="RemoteFlattener.TreeWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="RemoteFlattener – Network Tree"
+        Title="RemoteFlattener – Desktop Map"
         WindowStyle="None"
         AllowsTransparency="True"
-        Background="#AA000000"
+        Background="#B4000000"
         Topmost="True"
         ShowInTaskbar="False"
         WindowState="Maximized"
@@ -12,46 +12,107 @@
         KeyDown="Window_KeyDown"
         Focusable="True">
     <Grid>
-        <!-- Semi-transparent full-screen backdrop; clicking it closes the window. -->
         <Rectangle Fill="Transparent"/>
 
-        <Border Background="#EE1E1E2E"
-                CornerRadius="10"
+        <Border x:Name="ContentPanel"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center"
-                MinWidth="380"
-                MaxWidth="600"
-                Padding="24,20">
-            <StackPanel>
-                <TextBlock Text="Network Tree"
-                           Foreground="White"
-                           FontSize="20"
-                           FontWeight="Bold"
-                           HorizontalAlignment="Center"
-                           Margin="0,0,0,16"/>
+                MinWidth="500" MaxWidth="740" MaxHeight="900"
+                Background="#F01E1E2E"
+                BorderBrush="#22FFFFFF"
+                BorderThickness="1"
+                CornerRadius="12"
+                ClipToBounds="True">
+            <Border.Effect>
+                <DropShadowEffect ShadowDepth="0" BlurRadius="48" Opacity="0.75" Color="Black"/>
+            </Border.Effect>
+            <DockPanel>
 
-                <TreeView x:Name="NetworkTree"
-                          Background="Transparent"
-                          BorderThickness="0"
-                          Foreground="White"
-                          IsHitTestVisible="False">
-                    <TreeView.Resources>
-                        <Style TargetType="TreeViewItem">
-                            <Setter Property="Foreground" Value="White"/>
-                            <Setter Property="FontFamily" Value="Consolas"/>
-                            <Setter Property="FontSize"   Value="13"/>
-                            <Setter Property="IsExpanded" Value="True"/>
-                            <Setter Property="Background" Value="Transparent"/>
-                        </Style>
-                    </TreeView.Resources>
-                </TreeView>
+                <!-- ── Header ── -->
+                <Border DockPanel.Dock="Top" Background="#11111C" Padding="20,14,12,14">
+                    <DockPanel LastChildFill="False">
+                        <!-- Settings icon button -->
+                        <Button x:Name="SettingsButton"
+                                DockPanel.Dock="Right"
+                                Content="⚙"
+                                FontFamily="Segoe UI Emoji, Segoe UI"
+                                FontSize="15"
+                                Foreground="#55556A"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Padding="7,5"
+                                Cursor="Hand"
+                                VerticalAlignment="Top"
+                                ToolTip="Settings"
+                                Click="SettingsButton_Click">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                                            CornerRadius="5" Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="bd" Property="Background" Value="#1EFFFFFF"/>
+                                            <Setter Property="Foreground" Value="#9999B8"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
 
-                <TextBlock Text="Click anywhere or press Escape to close"
-                           Foreground="#888888"
-                           FontSize="11"
-                           HorizontalAlignment="Center"
-                           Margin="0,16,0,0"/>
-            </StackPanel>
+                        <!-- Title + keyboard hint -->
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="Desktop Map"
+                                       Foreground="White"
+                                       FontSize="17"
+                                       FontWeight="SemiBold"
+                                       FontFamily="Segoe UI"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                <Border Background="#1EFFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,5,0">
+                                    <TextBlock Text="↑↓" Foreground="#7777AA" FontSize="9" FontFamily="Segoe UI"/>
+                                </Border>
+                                <TextBlock Text="Navigate" Foreground="#33334A" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <Border Background="#1EFFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,5,0">
+                                    <TextBlock Text="↵" Foreground="#7777AA" FontSize="9" FontFamily="Segoe UI"/>
+                                </Border>
+                                <TextBlock Text="Activate" Foreground="#33334A" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <Border Background="#1EFFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,5,0">
+                                    <TextBlock Text="Esc" Foreground="#7777AA" FontSize="9" FontFamily="Segoe UI"/>
+                                </Border>
+                                <TextBlock Text="Close" Foreground="#33334A" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- 1 px rule -->
+                <Rectangle DockPanel.Dock="Top" Height="1" Fill="#18FFFFFF"/>
+
+                <!-- ── Scrollable tree ── -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Padding="14,10">
+                    <TreeView x:Name="NetworkTree"
+                              Background="Transparent"
+                              BorderThickness="0"
+                              Foreground="White">
+                        <TreeView.Resources>
+                            <Style TargetType="TreeViewItem">
+                                <Setter Property="Foreground"                 Value="White"/>
+                                <Setter Property="FontFamily"                 Value="Segoe UI"/>
+                                <Setter Property="FontSize"                   Value="13"/>
+                                <Setter Property="IsExpanded"                 Value="True"/>
+                                <Setter Property="Background"                 Value="Transparent"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <Setter Property="Padding"                    Value="4,0"/>
+                                <Setter Property="FocusVisualStyle"           Value="{x:Null}"/>
+                            </Style>
+                        </TreeView.Resources>
+                    </TreeView>
+                </ScrollViewer>
+
+            </DockPanel>
         </Border>
     </Grid>
 </Window>

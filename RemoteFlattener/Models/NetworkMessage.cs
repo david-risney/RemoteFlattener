@@ -28,6 +28,25 @@ public class NetworkMessage
     [JsonPropertyName("rdpPeers")]
     public List<string>? RdpPeers { get; set; }
 
+    [JsonPropertyName("desktopNames")]
+    public List<string>? DesktopNames { get; set; }
+
+    /// <summary>Base64-encoded JPEG thumbnails, one entry per desktop (empty string = no thumbnail).</summary>
+    [JsonPropertyName("wallpaperThumbnails")]
+    public List<string>? WallpaperThumbnails { get; set; }
+
+    /// <summary>Machine that originally created this message.  Set by the sender; preserved by relays.</summary>
+    [JsonPropertyName("originMachine")]
+    public string? OriginMachine { get; set; }
+
+    /// <summary>Unique ID used to detect and drop duplicate messages in the mesh.</summary>
+    [JsonPropertyName("messageId")]
+    public string? MessageId { get; set; }
+
+    /// <summary>If set, only the named machine should act on this message (others relay it onward).</summary>
+    [JsonPropertyName("targetMachine")]
+    public string? TargetMachine { get; set; }
+
     /// <summary>Serializes this message to a newline-terminated JSON string.</summary>
     public string Serialize() => JsonSerializer.Serialize(this) + "\n";
 

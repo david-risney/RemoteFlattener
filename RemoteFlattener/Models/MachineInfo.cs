@@ -12,6 +12,7 @@ public class MachineInfo : INotifyPropertyChanged
     private bool _isRdpServer;
     private bool _isConnected;
     private List<string> _rdpPeers = new();
+    private List<string> _desktopNames = new();
 
     public string MachineName
     {
@@ -47,6 +48,22 @@ public class MachineInfo : INotifyPropertyChanged
     {
         get => _rdpPeers;
         set { _rdpPeers = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Desktop display names in order, broadcast by the remote machine.</summary>
+    public List<string> DesktopNames
+    {
+        get => _desktopNames;
+        set { _desktopNames = value; OnPropertyChanged(); }
+    }
+
+    private List<string> _wallpaperThumbnails = new();
+
+    /// <summary>Base64-encoded JPEG thumbnail per desktop, received over the network.</summary>
+    public List<string> WallpaperThumbnails
+    {
+        get => _wallpaperThumbnails;
+        set { _wallpaperThumbnails = value; OnPropertyChanged(); }
     }
 
     public string DisplayText =>

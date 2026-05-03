@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using RemoteFlattener.Logging;
 
 namespace RemoteFlattener.VirtualDesktop;
 
@@ -13,6 +14,7 @@ public static class VirtualDesktopSwitcher
     private const ushort VK_LWIN = 0x5B;
     private const ushort VK_LEFT = 0x25;
     private const ushort VK_RIGHT = 0x27;
+    private const ushort VK_TAB  = 0x09;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct KEYBDINPUT
@@ -54,11 +56,72 @@ public static class VirtualDesktopSwitcher
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
-    public static void SwitchLeft() => Send(VK_LEFT);
-    public static void SwitchRight() => Send(VK_RIGHT);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
-    private static void Send(ushort arrowVk)
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    /// <summary>Opens the Windows Task View (virtual desktop overview) by injecting Win+Tab.
+    /// The WH_KEYBOARD_LL hook skips injected keystrokes so this does not recurse.</summary>
+    public static void ShowTaskView()
     {
+        var inputs = new INPUT[]
+        {
+            MakeKey(VK_LWIN, false),
+            MakeKey(VK_TAB,  false),
+            MakeKey(VK_TAB,  true),
+            MakeKey(VK_LWIN, true),
+        };
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>Switches the virtual desktop left, first forcing <paramref name="hwnd"/> to the foreground.
+    /// Tries the VirtualDesktop COM API first; falls back to a Ctrl+Win+Left SendInput if unavailable.</summary>
+    public static void SwitchLeft(IntPtr hwnd)
+    {
+        if (VirtualDesktopProvider.IsAvailable && VirtualDesktopProvider.SwitchLeft())
+        {
+            AppLogger.Log("SwitchLeft via VirtualDesktop API.");
+            return;
+        }
+        AppLogger.Log("SwitchLeft via SendInput fallback.");
+        Send(VK_LEFT, hwnd);
+    }
+
+    /// <summary>Switches the virtual desktop right, first forcing <paramref name="hwnd"/> to the foreground.
+    /// Tries the VirtualDesktop COM API first; falls back to a Ctrl+Win+Right SendInput if unavailable.</summary>
+    public static void SwitchRight(IntPtr hwnd)
+    {
+        if (VirtualDesktopProvider.IsAvailable && VirtualDesktopProvider.SwitchRight())
+        {
+            AppLogger.Log("SwitchRight via VirtualDesktop API.");
+            return;
+        }
+        AppLogger.Log("SwitchRight via SendInput fallback.");
+        Send(VK_RIGHT, hwnd);
+    }
+
+    private static void Send(ushort arrowVk, IntPtr hwnd)
+    {
+        if (hwnd != IntPtr.Zero)
+            ForceForeground(hwnd);
+
         var inputs = new INPUT[]
         {
             MakeKey(VK_LCONTROL, false),
@@ -69,6 +132,24 @@ public static class VirtualDesktopSwitcher
             MakeKey(VK_LCONTROL, true),
         };
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>
+    /// Reliably steals the foreground from any window by briefly attaching the calling thread’s
+    /// input queue to the current foreground thread.  This bypasses the Windows foreground-lock
+    /// restriction that prevents background processes from calling SetForegroundWindow directly.
+    /// </summary>
+    private static void ForceForeground(IntPtr hwnd)
+    {
+        var current    = GetCurrentThreadId();
+        var foreground = GetForegroundWindow();
+        if (foreground == hwnd) return;
+
+        var fgThread = GetWindowThreadProcessId(foreground, out _);
+        AttachThreadInput(current, fgThread, true);
+        SetForegroundWindow(hwnd);
+        BringWindowToTop(hwnd);
+        AttachThreadInput(current, fgThread, false);
     }
 
     private static INPUT MakeKey(ushort vk, bool keyUp) => new INPUT

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Security;
 using Microsoft.Win32;
+using WindowsDesktop;
 
 namespace RemoteFlattener.VirtualDesktop;
 
@@ -14,9 +15,19 @@ public static class VirtualDesktopHelper
     private const string RegistryPath =
         @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops";
 
-    /// <summary>Returns the GUID of the currently active virtual desktop.</summary>
+    /// <summary>Returns the GUID of the currently active virtual desktop.
+    /// Uses the VirtualDesktop API if available, otherwise reads the registry.</summary>
     public static Guid GetCurrentDesktopGuid()
     {
+        // If the provider is available, use it to get a reliable GUID.
+        if (VirtualDesktopProvider.IsAvailable)
+        {
+            try
+            {
+                return WindowsDesktop.VirtualDesktop.Current.Id;
+            }
+            catch { /* fall through to registry */ }
+        }
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RegistryPath);
@@ -27,9 +38,15 @@ public static class VirtualDesktopHelper
         return Guid.Empty;
     }
 
-    /// <summary>Returns the total number of virtual desktops (1 if only one exists).</summary>
+    /// <summary>Returns the total number of virtual desktops (1 if only one exists).
+    /// Uses the VirtualDesktop API if available, otherwise reads the registry.</summary>
     public static int GetTotalDesktopCount()
     {
+        if (VirtualDesktopProvider.IsAvailable)
+        {
+            try { return WindowsDesktop.VirtualDesktop.GetDesktops().Length; }
+            catch { /* fall through to registry */ }
+        }
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RegistryPath);
@@ -40,9 +57,15 @@ public static class VirtualDesktopHelper
         return 1;
     }
 
-    /// <summary>Returns the 1-based index of the current virtual desktop.</summary>
+    /// <summary>Returns the 1-based index of the current virtual desktop.
+    /// Uses the VirtualDesktop API if available, otherwise reads the registry.</summary>
     public static int GetCurrentDesktopIndex()
     {
+        if (VirtualDesktopProvider.IsAvailable)
+        {
+            var (index, _) = VirtualDesktopProvider.GetDesktopState();
+            if (index > 0) return index;
+        }
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RegistryPath);
