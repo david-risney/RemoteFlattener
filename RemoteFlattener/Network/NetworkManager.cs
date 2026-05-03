@@ -14,11 +14,20 @@ using RemoteFlattener.Models;
 namespace RemoteFlattener.Network;
 
 /// <summary>Represents an authenticated, active connection to a remote peer.</summary>
-internal sealed class PeerConnection
+internal sealed class PeerConnection : IDisposable
 {
     public required string MachineName { get; init; }
     public required TcpClient Client { get; init; }
     public required StreamWriter Writer { get; init; }
+    /// <summary>Guards Writer so concurrent broadcasts don't interleave JSON lines.</summary>
+    public SemaphoreSlim WriteLock { get; } = new SemaphoreSlim(1, 1);
+
+    public void Dispose()
+    {
+        WriteLock.Dispose();
+        Writer.Dispose();
+        Client.Dispose();
+    }
 }
 
 /// <summary>
@@ -74,7 +83,7 @@ public sealed class NetworkManager : IDisposable
         _listener?.Stop();
         foreach (var conn in _connections.Values)
         {
-            try { conn.Client.Close(); } catch { }
+            try { conn.Dispose(); } catch { }
         }
         _connections.Clear();
     }
@@ -90,12 +99,14 @@ public sealed class NetworkManager : IDisposable
 
     private static async Task SendLineAsync(PeerConnection conn, string json)
     {
+        await conn.WriteLock.WaitAsync();
         try
         {
             await conn.Writer.WriteAsync(json);
             await conn.Writer.FlushAsync();
         }
         catch { /* Peer may have disconnected; will be noticed on next read */ }
+        finally { conn.WriteLock.Release(); }
     }
 
     // ── Listener (incoming) ──────────────────────────────────────────────────
@@ -151,8 +162,8 @@ public sealed class NetworkManager : IDisposable
     {
         string? remoteMachine = null;
         var stream = client.GetStream();
-        var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
-        var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true) { AutoFlush = false };
+        var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
+        var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: false) { AutoFlush = false };
 
         try
         {
@@ -192,7 +203,7 @@ public sealed class NetworkManager : IDisposable
             var conn = new PeerConnection { MachineName = remoteMachine, Client = client, Writer = writer };
             if (!_connections.TryAdd(remoteMachine, conn))
             {
-                client.Close();
+                conn.Dispose();
                 return;
             }
 
@@ -213,11 +224,17 @@ public sealed class NetworkManager : IDisposable
         finally
         {
             reader.Dispose();
-            writer.Dispose();
-            try { client.Close(); } catch { }
-
-            if (remoteMachine != null && _connections.TryRemove(remoteMachine, out _))
+            // conn.Dispose() closes writer and client; fall back if conn was never registered.
+            if (remoteMachine != null && _connections.TryRemove(remoteMachine, out var removed))
+            {
+                removed.Dispose();
                 PeerDisconnected?.Invoke(remoteMachine);
+            }
+            else
+            {
+                writer.Dispose();
+                try { client.Close(); } catch (Exception ex) when (ex is IOException or SocketException) { }
+            }
         }
     }
 

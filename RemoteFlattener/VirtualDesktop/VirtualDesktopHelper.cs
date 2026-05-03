@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Security;
 using Microsoft.Win32;
 
 namespace RemoteFlattener.VirtualDesktop;
@@ -21,7 +23,7 @@ public static class VirtualDesktopHelper
             if (key?.GetValue("CurrentVirtualDesktop") is byte[] data && data.Length >= 16)
                 return new Guid(data[..16]);
         }
-        catch { }
+        catch (Exception ex) when (ex is IOException or SecurityException or UnauthorizedAccessException) { }
         return Guid.Empty;
     }
 
@@ -34,7 +36,7 @@ public static class VirtualDesktopHelper
             if (key?.GetValue("VirtualDesktopIDs") is byte[] data && data.Length >= 16)
                 return data.Length / 16;
         }
-        catch { }
+        catch (Exception ex) when (ex is IOException or SecurityException or UnauthorizedAccessException) { }
         return 1;
     }
 
@@ -58,7 +60,7 @@ public static class VirtualDesktopHelper
                 if (guid == currentGuid) return i + 1;
             }
         }
-        catch { }
+        catch (Exception ex) when (ex is IOException or SecurityException or UnauthorizedAccessException) { }
         return 1;
     }
 }

@@ -33,9 +33,8 @@ public partial class MainWindow : Window
     private void GeneratePassword_Click(object sender, RoutedEventArgs e)
     {
         const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        var rng = new Random();
-        PasswordBox.Text = new string(
-            Enumerable.Range(0, 16).Select(_ => chars[rng.Next(chars.Length)]).ToArray());
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+        PasswordBox.Text = new string(bytes.Select(b => chars[b % chars.Length]).ToArray());
     }
 
     private void Start_Click(object sender, RoutedEventArgs e)
