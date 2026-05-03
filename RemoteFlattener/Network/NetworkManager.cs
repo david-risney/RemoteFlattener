@@ -177,13 +177,18 @@ public sealed class NetworkManager : IDisposable
                 var ackLine = await reader.ReadLineAsync(ct);
                 if (ackLine == null) return;
                 var ack = NetworkMessage.Deserialize(ackLine);
-                if (ack?.Type != "HELLO_ACK") return;
+                // Verify server also knows the password via its HMAC.
+                if (ack?.Type != "HELLO_ACK" ||
+                    string.IsNullOrEmpty(ack.MachineName) ||
+                    string.IsNullOrEmpty(ack.Hmac) ||
+                    !VerifyHmac(ack.MachineName, ack.Hmac))
+                    return;
 
-                remoteMachine = remoteMachineHint ?? ack.MachineName ?? "unknown";
+                remoteMachine = remoteMachineHint ?? ack.MachineName;
             }
             else
             {
-                // Wait for HELLO then send HELLO_ACK.
+                // Wait for HELLO then send HELLO_ACK with our own HMAC.
                 var helloLine = await reader.ReadLineAsync(ct);
                 if (helloLine == null) return;
                 var hello = NetworkMessage.Deserialize(helloLine);
@@ -194,7 +199,8 @@ public sealed class NetworkManager : IDisposable
                     return;
 
                 remoteMachine = hello.MachineName;
-                var ack = new NetworkMessage { Type = "HELLO_ACK", MachineName = LocalMachineName };
+                var ack = BuildHello();
+                ack.Type = "HELLO_ACK";
                 await writer.WriteAsync(ack.Serialize());
                 await writer.FlushAsync();
             }

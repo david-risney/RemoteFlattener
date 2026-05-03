@@ -1,6 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading;
 using System.Windows;
 using RemoteFlattener.Hotkeys;
 using RemoteFlattener.Models;
@@ -15,6 +16,7 @@ public partial class MainWindow : Window
     private NetworkManager? _networkManager;
     private HotkeyManager? _hotkeyManager;
     private TreeWindow? _treeWindow;
+    private Timer? _stateTimer;
 
     private bool _isRunning;
     private bool _isRdpServer;
@@ -64,6 +66,9 @@ public partial class MainWindow : Window
         _networkManager.PeerDisconnected += OnPeerDisconnected;
         _networkManager.Start(password, machines);
 
+        // Broadcast our desktop state every 5 seconds so peers stay current.
+        _stateTimer = new Timer(_ => BroadcastOurState(), null, 1_000, 5_000);
+
         // Install keyboard hook only when acting as RDP server.
         if (_isRdpServer)
         {
@@ -88,6 +93,9 @@ public partial class MainWindow : Window
     private void StopAll()
     {
         _isRunning = false;
+
+        _stateTimer?.Dispose();
+        _stateTimer = null;
 
         _hotkeyManager?.Uninstall();
         _hotkeyManager = null;
