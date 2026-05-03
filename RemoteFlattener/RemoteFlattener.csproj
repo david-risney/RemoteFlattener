@@ -7,7 +7,6 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>RemoteFlattener</AssemblyName>
     <RootNamespace>RemoteFlattener</RootNamespace>
-    <Platforms>x64</Platforms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
 </Project>

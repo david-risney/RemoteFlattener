@@ -239,7 +239,7 @@ public sealed class NetworkManager : IDisposable
             else
             {
                 writer.Dispose();
-                try { client.Close(); } catch (Exception ex) when (ex is IOException or SocketException) { }
+                try { client.Close(); } catch { }
             }
         }
     }
