@@ -21,6 +21,35 @@ $ErrorActionPreference = 'Stop'
 $proj    = "$PSScriptRoot\RemoteFlattener\RemoteFlattener.csproj"
 $pubExe  = "$PSScriptRoot\publish\RemoteFlattener.exe"
 
+# ── Ensure .NET 8 SDK is installed ──────────────────────────────────────────
+function Ensure-DotnetSdk {
+    $sdkAvailable = $false
+    try {
+        $sdks = & dotnet --list-sdks 2>$null
+        if ($LASTEXITCODE -eq 0 -and $sdks -match '^8\.') {
+            $sdkAvailable = $true
+        }
+    } catch { }
+
+    if (-not $sdkAvailable) {
+        Write-Host ".NET 8 SDK not found – installing via winget..." -ForegroundColor Yellow
+        winget install Microsoft.DotNet.SDK.8 --accept-source-agreements --accept-package-agreements
+        if ($LASTEXITCODE -ne 0) { throw "Failed to install .NET 8 SDK." }
+        # Refresh PATH so dotnet is available in this session
+        $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+                    [System.Environment]::GetEnvironmentVariable('Path', 'User')
+        Write-Host ".NET 8 SDK installed." -ForegroundColor Green
+    }
+}
+
+function Invoke-Restore {
+    dotnet restore $proj
+    if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed (exit $LASTEXITCODE)." }
+}
+
+Ensure-DotnetSdk
+Invoke-Restore
+
 function Invoke-Publish {
     dotnet publish $proj -p:PublishProfile=SingleFile
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)." }
@@ -80,7 +109,7 @@ switch ($Task) {
                 git fetch --quiet 2>&1 | Out-Null
 
                 # Count commits that are on origin but not local.
-                $behind = [int](git rev-list HEAD..@{u} --count 2>$null)
+                $behind = [int](git rev-list 'HEAD..@{u}' --count 2>$null)
 
                 if ($behind -gt 0) {
                     Write-Host "  $behind new commit(s) found – pulling..." -ForegroundColor Cyan
