@@ -200,7 +200,8 @@ public partial class MainWindow : Window
     {
         var name = AddPeerBox.Text?.Trim() ?? string.Empty;
         if (string.IsNullOrEmpty(name)) return;
-        if (!Connections.Any(m => m.MachineName.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        if (!Connections.Any(m => MachineInfo.NormalizeHostname(m.MachineName)
+                .Equals(MachineInfo.NormalizeHostname(name), StringComparison.OrdinalIgnoreCase)))
         {
             Connections.Add(new MachineInfo { MachineName = name });
             SaveSettings();
@@ -510,8 +511,9 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            var normalized = MachineInfo.NormalizeHostname(machineName);
             var info = Connections.FirstOrDefault(m =>
-                m.MachineName.Equals(machineName, StringComparison.OrdinalIgnoreCase));
+                MachineInfo.NormalizeHostname(m.MachineName).Equals(normalized, StringComparison.OrdinalIgnoreCase));
             if (info != null)
                 info.IsConnected = false;
             RefreshStatusLabel();
@@ -668,10 +670,10 @@ public partial class MainWindow : Window
     {
         var normalized = MachineInfo.NormalizeHostname(machineName);
         var info = Connections.FirstOrDefault(m =>
-            m.MachineName.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            MachineInfo.NormalizeHostname(m.MachineName).Equals(normalized, StringComparison.OrdinalIgnoreCase));
         if (info == null)
         {
-            info = new MachineInfo { MachineName = normalized };
+            info = new MachineInfo { MachineName = machineName };
             Connections.Add(info);
         }
         return info;

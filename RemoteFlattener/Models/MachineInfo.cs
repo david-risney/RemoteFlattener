@@ -18,7 +18,7 @@ public class MachineInfo : INotifyPropertyChanged
     public string MachineName
     {
         get => _machineName;
-        set { _machineName = NormalizeHostname(value); OnPropertyChanged(); OnPropertyChanged(nameof(DisplayText)); }
+        set { _machineName = value.Trim(); OnPropertyChanged(); OnPropertyChanged(nameof(DisplayText)); }
     }
 
     public int CurrentDesktop

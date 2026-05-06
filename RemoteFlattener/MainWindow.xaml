@@ -287,15 +287,18 @@
                             </Border>
 
                             <!-- Add peer row -->
-                            <DockPanel Margin="0,6,0,0">
+                            <DockPanel Margin="0,6,0,0"
+                                       KeyboardNavigation.TabNavigation="Local">
                                 <Button DockPanel.Dock="Right"
                                         Content="+ Add"
                                         Style="{StaticResource GhostButton}"
                                         Margin="8,0,0,0"
+                                        TabIndex="1"
                                         Click="AddPeer_Click"/>
                                 <Grid>
                                     <TextBox x:Name="AddPeerBox"
                                              Style="{StaticResource DarkTextBox}"
+                                             TabIndex="0"
                                              KeyDown="AddPeerBox_KeyDown"/>
                                     <!-- Placeholder overlay: visible only when box is empty -->
                                     <TextBlock Text="hostname or IP address"

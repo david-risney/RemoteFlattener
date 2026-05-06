@@ -7,7 +7,7 @@
     .\build.ps1 run       # build + launch
     .\build.ps1 publish   # single-file release exe → publish\
     .\build.ps1 clean     # remove bin/obj/publish
-    .\build.ps1 watch     # poll git every 60 s; pull → rebuild → restart on changes
+    .\build.ps1 watch     # poll every 60 s; rebuild + restart on upstream commits or local file changes
 #>
 param(
     [ValidateSet('build', 'run', 'publish', 'clean', 'watch')]
@@ -112,33 +112,85 @@ switch ($Task) {
         try {
             Write-Host "Watch mode started (polling every $PollSeconds s).  Press Ctrl+C to stop." -ForegroundColor Cyan
 
+            # Source files to monitor for local changes; excludes bin\ and obj\ output folders.
+            $sourceRoot = "$PSScriptRoot\RemoteFlattener"
+            $watchExtensions = '*.cs', '*.xaml', '*.csproj', '*.json'
+
+            function Get-LatestSourceChange {
+                $watchExtensions | ForEach-Object {
+                    Get-ChildItem -Path $sourceRoot -Filter $_ -Recurse -ErrorAction SilentlyContinue |
+                        Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }
+                } | Sort-Object LastWriteTime -Descending |
+                  Select-Object -First 1 -ExpandProperty LastWriteTime
+            }
+
+            # Seed $lastBuildTime from the published exe (or epoch when it doesn't exist yet).
+            $lastBuildTime = if (Test-Path $pubExe) {
+                (Get-Item $pubExe).LastWriteTime
+            } else {
+                [datetime]::MinValue
+            }
+            Write-Host "  Last build: $(if ($lastBuildTime -eq [datetime]::MinValue) { 'never' } else { $lastBuildTime.ToString('HH:mm:ss') })" -ForegroundColor DarkGray
+
             # Do an initial fetch so the first comparison is meaningful.
             git fetch --quiet 2>&1 | Out-Null
 
             while ($true) {
-                Write-Host "`n[$(Get-Date -Format 'HH:mm:ss')] Checking for upstream changes..." -ForegroundColor DarkCyan
+                Write-Host "`n[$(Get-Date -Format 'HH:mm:ss')] Checking for changes..." -ForegroundColor DarkCyan
 
+                $rebuilt = $false
+
+                # ── 1. Upstream commits ──────────────────────────────────────
                 git fetch --quiet 2>&1 | Out-Null
-
-                # Count commits that are on origin but not local.
                 $behind = [int](git rev-list 'HEAD..@{u}' --count 2>$null)
 
                 if ($behind -gt 0) {
-                    Write-Host "  $behind new commit(s) found – pulling..." -ForegroundColor Cyan
+                    Write-Host "  $behind new commit(s) upstream – pulling..." -ForegroundColor Cyan
                     git pull
                     if ($LASTEXITCODE -ne 0) {
-                        Write-Warning "git pull failed – skipping rebuild this cycle."
+                        Write-Warning "git pull failed (dirty working tree or conflict?) – will still check local changes."
                     }
                     else {
                         Write-Host "  Publishing..." -ForegroundColor Cyan
-                        Stop-RemoteFlattener
-                        Invoke-Publish
-                        Start-RemoteFlattenerIfNotRunning
-                        Write-Host "  Done." -ForegroundColor Green
+                        try {
+                            Stop-RemoteFlattener
+                            Invoke-Publish
+                            $lastBuildTime = Get-Date
+                            Start-RemoteFlattener
+                            $rebuilt = $true
+                            Write-Host "  Done." -ForegroundColor Green
+                        }
+                        catch {
+                            Write-Warning "Build failed: $_"
+                            Write-Warning "Will retry on next change."
+                        }
                     }
                 }
-                else {
-                    Write-Host "  Up to date." -ForegroundColor DarkGray
+
+                # ── 2. Local file changes ────────────────────────────────────
+                # Runs even when a pull failed so local edits are not silently skipped.
+                if (-not $rebuilt) {
+                    $latestChange = Get-LatestSourceChange
+                    if ($latestChange -and $latestChange -gt $lastBuildTime) {
+                        Write-Host "  Local change detected (newest file: $($latestChange.ToString('HH:mm:ss'))) – rebuilding..." -ForegroundColor Cyan
+                        try {
+                            Stop-RemoteFlattener
+                            Invoke-Publish
+                            $lastBuildTime = Get-Date
+                            Start-RemoteFlattener
+                            $rebuilt = $true
+                            Write-Host "  Done." -ForegroundColor Green
+                        }
+                        catch {
+                            Write-Warning "Build failed: $_"
+                            Write-Warning "Will retry on next change."
+                        }
+                    }
+                }
+
+                # ── 3. No rebuild – ensure app is still running ──────────────
+                if (-not $rebuilt) {
+                    Write-Host "  No changes." -ForegroundColor DarkGray
                     Start-RemoteFlattenerIfNotRunning
                 }
 

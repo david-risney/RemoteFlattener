@@ -31,13 +31,20 @@ public class MachineInfoTests
         Assert.Equal("MYPC", MachineInfo.NormalizeHostname("mypc"));
     }
 
-    // ── MachineName setter normalizes ──────────────────────────────────────
+    // ── MachineName setter preserves value ─────────────────────────────────
 
     [Fact]
-    public void MachineName_Setter_NormalizesToUppercase()
+    public void MachineName_Setter_PreservesFqdn()
     {
         var info = new MachineInfo { MachineName = "davris-0.corp.com" };
-        Assert.Equal("DAVRIS-0", info.MachineName);
+        Assert.Equal("davris-0.corp.com", info.MachineName);
+    }
+
+    [Fact]
+    public void MachineName_Setter_TrimsWhitespace()
+    {
+        var info = new MachineInfo { MachineName = "  MYPC  " };
+        Assert.Equal("MYPC", info.MachineName);
     }
 
     // ── INotifyPropertyChanged ────────────────────────────────────────────
