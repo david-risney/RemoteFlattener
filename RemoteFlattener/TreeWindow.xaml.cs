@@ -249,7 +249,7 @@ public partial class TreeWindow : Window
         {
             shown.Add(client.MachineName);
             var clientItem = MakeMachineItem(client, isLocal: false);
-            AddDesktopChildren(clientItem, DesktopRowsFor(client));
+            AddDesktopChildrenWithNestedServers(clientItem, client, all, shown, localServerNode: null);
             NetworkTree.Items.Add(clientItem);
         }
 
@@ -434,9 +434,10 @@ public partial class TreeWindow : Window
     private void AddDesktopChildrenWithNestedServers(
         TreeViewItem clientItem, MachineInfo client,
         List<MachineInfo> all, HashSet<string> shown,
-        TreeViewItem? localServerNode)
+        TreeViewItem? localServerNode,
+        bool parentIsActive = true)
     {
-        var desktops = GetDesktopRowsFor(client);
+        var desktops = GetDesktopRowsFor(client, parentIsActive);
         if (desktops.Length == 0) return;
 
         // Group remote servers by desktop index from the broadcast map.
@@ -475,10 +476,11 @@ public partial class TreeWindow : Window
                 {
                     shown.Add(s.MachineName);
                     var sItem = MakeMachineItem(s, isLocal: false, indent: true);
-                    // Pass d.IsCurrent as parentIsActive: a server's desktop only shows
-                    // "Active" and has Switch disabled when its parent client desktop is
-                    // currently the active one (i.e. the mstsc window is visible).
-                    AddDesktopChildren(sItem, GetDesktopRowsFor(s, parentIsActive: d.IsCurrent));
+                    // Recurse: s may itself be a client that hosts further servers
+                    // (multi-hop chain). parentIsActive flows down so "Active"/Switch
+                    // states are only shown when the full path from root is visible.
+                    AddDesktopChildrenWithNestedServers(sItem, s, all, shown,
+                        localServerNode: null, parentIsActive: d.IsCurrent);
                     dItem.Items.Add(sItem);
                     dItem.IsExpanded = true;
                 }
