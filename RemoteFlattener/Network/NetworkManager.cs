@@ -40,6 +40,11 @@ public sealed class NetworkManager : IDisposable
 {
     private const int Port = 8765;
     private const string AppSalt = "RemoteFlattener";
+    /// <summary>
+    /// Increment when making breaking changes to the wire format.
+    /// Peers with a different protocol version will be rejected during handshake.
+    /// </summary>
+    public const int ProtocolVersion = 1;
 
     private string _password = string.Empty;
     private List<string> _peerMachines = new();
@@ -55,7 +60,7 @@ public sealed class NetworkManager : IDisposable
     private bool _disposed;
 
     /// <summary>The machine name of this instance (used in authentication and state messages).</summary>
-    public string LocalMachineName { get; } = Environment.MachineName;
+    public string LocalMachineName { get; } = MachineInfo.NormalizeHostname(Environment.MachineName);
 
     /// <summary>Machine names of currently authenticated, connected peers.</summary>
     public IEnumerable<string> ConnectedPeers =>
@@ -92,7 +97,12 @@ public sealed class NetworkManager : IDisposable
         _listener?.Stop();
         foreach (var conn in _connections.Values)
         {
-            try { conn.Dispose(); } catch { }
+            try
+            {
+                PeerDisconnected?.Invoke(conn.MachineName);
+                conn.Dispose();
+            }
+            catch { }
         }
         _connections.Clear();
     }
@@ -236,8 +246,13 @@ public sealed class NetworkManager : IDisposable
                     AppLogger.Log($"Outgoing [{remoteMachineHint}]: authentication failed (bad HELLO_ACK).");
                     return;
                 }
+                if (ack.ProtocolVersion != ProtocolVersion)
+                {
+                    AppLogger.Log($"Outgoing [{remoteMachineHint}]: incompatible protocol version (ours={ProtocolVersion}, theirs={ack.ProtocolVersion}). Update RemoteFlattener on both machines.");
+                    return;
+                }
 
-                remoteMachine = remoteMachineHint ?? ack.MachineName;
+                remoteMachine = MachineInfo.NormalizeHostname(remoteMachineHint ?? ack.MachineName);
             }
             else
             {
@@ -253,8 +268,13 @@ public sealed class NetworkManager : IDisposable
                     AppLogger.Log("Incoming: authentication failed (bad HELLO or wrong password).");
                     return;
                 }
+                if (hello.ProtocolVersion != ProtocolVersion)
+                {
+                    AppLogger.Log($"Incoming [{hello.MachineName}]: incompatible protocol version (ours={ProtocolVersion}, theirs={hello.ProtocolVersion}). Update RemoteFlattener on both machines.");
+                    return;
+                }
 
-                remoteMachine = hello.MachineName;
+                remoteMachine = MachineInfo.NormalizeHostname(hello.MachineName);
                 var ack = BuildHello();
                 ack.Type = "HELLO_ACK";
                 await writer.WriteAsync(ack.Serialize());
@@ -366,9 +386,10 @@ public sealed class NetworkManager : IDisposable
     {
         return new NetworkMessage
         {
-            Type = "HELLO",
-            MachineName = LocalMachineName,
-            Hmac = ComputeHmac(LocalMachineName)
+            Type            = "HELLO",
+            MachineName     = LocalMachineName,
+            Hmac            = ComputeHmac(LocalMachineName),
+            ProtocolVersion = ProtocolVersion
         };
     }
 

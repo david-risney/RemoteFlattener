@@ -27,6 +27,7 @@ public partial class MainWindow : Window
 
     private bool _isRunning;
     private bool _isRdpServer;
+    private System.Windows.Forms.NotifyIcon? _notifyIcon;
 
     // Prevents the server from re-broadcasting a switch that echoes back as a
     // synthetic keystroke from the client's SendInput call.
@@ -46,6 +47,11 @@ public partial class MainWindow : Window
         AppLogger.LogWritten += OnLogWritten;
         AppLogger.Log($"RemoteFlattener started.  Local machine: {Environment.MachineName}");
 
+        var ver = System.Reflection.Assembly.GetExecutingAssembly()
+                      .GetName().Version;
+        VersionLabel.Text = ver != null ? $"v{ver.Major}.{ver.Minor}.{ver.Build}" : string.Empty;
+
+        InitializeTrayIcon();
         LoadSettings();
     }
 
@@ -90,6 +96,39 @@ public partial class MainWindow : Window
             Loaded += (_, _) => StartNetwork();
     }
 
+    private void TitleLink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
+    {
+        Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        e.Handled = true;
+    }
+
+    private void InitializeTrayIcon()
+    {
+        _notifyIcon = new System.Windows.Forms.NotifyIcon
+        {
+            Text    = "RemoteFlattener",
+            Icon    = System.Drawing.SystemIcons.Application,
+            Visible = true
+        };
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add("Open",  null, (_, _) => Dispatcher.Invoke(OpenSettings));
+        menu.Items.Add("-");
+        menu.Items.Add("Exit",  null, (_, _) => Dispatcher.Invoke(() =>
+        {
+            _notifyIcon.Visible = false;
+            Application.Current.Shutdown();
+        }));
+        _notifyIcon.ContextMenuStrip = menu;
+        _notifyIcon.DoubleClick     += (_, _) => Dispatcher.Invoke(OpenSettings);
+    }
+
+    protected override void OnStateChanged(EventArgs e)
+    {
+        if (WindowState == WindowState.Minimized)
+            Hide();
+        base.OnStateChanged(e);
+    }
+
     private void GenerateAndSavePassword()
     {
         const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -117,20 +156,34 @@ public partial class MainWindow : Window
         if (peers.Count == 0)
         {
             AppLogger.Log("Detect: no active RDP connections found.");
-            MessageBox.Show("No active RDP connections found on port 3389.",
-                "RemoteFlattener", MessageBoxButton.OK, MessageBoxImage.Information);
+            ShowPeersStatus("No active RDP connections found.");
             return;
         }
 
-        AppLogger.Log($"Detect: found {peers.Count} peer(s): {string.Join(", ", peers)}");
-
-        // Add newly-detected hosts that are not already in the list.
+        int added = 0;
         foreach (var peer in peers)
         {
             if (!Connections.Any(m => m.MachineName.Equals(peer, StringComparison.OrdinalIgnoreCase)))
+            {
                 Connections.Add(new MachineInfo { MachineName = peer });
+                added++;
+            }
         }
-        SaveSettings();
+
+        AppLogger.Log($"Detect: found {peers.Count} peer(s), added {added} new.");
+        ShowPeersStatus(added > 0 ? $"Added {added} new peer(s)." : "No new peers found.");
+        if (added > 0) SaveSettings();
+    }
+
+    private System.Threading.Timer? _peersStatusTimer;
+    private void ShowPeersStatus(string message)
+    {
+        PeersStatusText.Text       = message;
+        PeersStatusText.Visibility = Visibility.Visible;
+        _peersStatusTimer?.Dispose();
+        _peersStatusTimer = new System.Threading.Timer(_ =>
+            Dispatcher.Invoke(() => PeersStatusText.Visibility = Visibility.Collapsed),
+            null, 3000, System.Threading.Timeout.Infinite);
     }
 
     private void AddPeer_Click(object sender, RoutedEventArgs e) => AddPeerFromBox();
@@ -165,6 +218,27 @@ public partial class MainWindow : Window
         }
     }
 
+    private void PeersToggle_Click(object sender, RoutedEventArgs e)
+    {
+        var collapsed = PeersSection.Visibility == Visibility.Collapsed;
+        PeersSection.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        PeersChevron.Text       = collapsed ? "▾" : "▸";
+    }
+
+    private void PasswordToggle_Click(object sender, RoutedEventArgs e)
+    {
+        var collapsed = PasswordSection.Visibility == Visibility.Collapsed;
+        PasswordSection.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        PasswordChevron.Text       = collapsed ? "▾" : "▸";
+    }
+
+    private void LogToggle_Click(object sender, RoutedEventArgs e)
+    {
+        var collapsed = LogBox.Visibility == Visibility.Collapsed;
+        LogBox.Visibility  = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        LogChevron.Text    = collapsed ? "▾" : "▸";
+    }
+
     private void GeneratePassword_Click(object sender, RoutedEventArgs e)
     {
         GenerateAndSavePassword();
@@ -193,9 +267,7 @@ public partial class MainWindow : Window
         else
             AppLogger.Log("No peers configured — listening only.");
 
-        StartButton.IsEnabled        = false;
-        StopButton.IsEnabled          = true;
-        NetworkTreeButton.IsEnabled   = true;
+        NetworkTreeButton.IsEnabled = true;
         RefreshStatusLabel();
 
         // Initialise the VirtualDesktop COM API (falls back gracefully if unavailable).
@@ -247,9 +319,7 @@ public partial class MainWindow : Window
     {
         AppLogger.Log("Stopping.");
         StopAll();
-        StartButton.IsEnabled        = true;
-        StopButton.IsEnabled         = false;
-        NetworkTreeButton.IsEnabled  = false;
+        NetworkTreeButton.IsEnabled = false;
         RefreshStatusLabel();
     }
 
@@ -279,6 +349,7 @@ public partial class MainWindow : Window
         foreach (var peer in Connections)
         {
             peer.IsConnected    = false;
+            peer.IsIndirect     = false;
             peer.CurrentDesktop = 0;
             peer.TotalDesktops  = 0;
         }
@@ -288,6 +359,7 @@ public partial class MainWindow : Window
     {
         AppLogger.Log("Application closed.");
         AppLogger.LogWritten -= OnLogWritten;
+        if (_notifyIcon != null) { _notifyIcon.Visible = false; _notifyIcon.Dispose(); }
         SaveSettings();
         StopAll();
         base.OnClosed(e);
@@ -349,25 +421,33 @@ public partial class MainWindow : Window
 
     private void RefreshStatusLabel()
     {
+        var connected = Connections.Count(m => m.IsConnected || m.IsIndirect);
         if (_isRunning)
         {
-            var role = _isRdpServer ? "RDP Server" : "RDP Client";
-            StatusLabel.Text       = $"● Running – {role}";
+            StatusLabel.Text       = connected > 0 ? $"● Running · {connected} peer{(connected == 1 ? "" : "s")}" : "● Running";
             StatusLabel.Foreground = new System.Windows.Media.SolidColorBrush(
                 System.Windows.Media.Color.FromRgb(0x5A, 0xD0, 0x6A));
             StatusPill.Background  = new System.Windows.Media.SolidColorBrush(
                 System.Windows.Media.Color.FromArgb(0xFF, 0x1E, 0x35, 0x1E));
-            RoleLabel.Text = role;
+            StartButton.Content = "■  Stop";
+            StartButton.Style   = (Style)FindResource("DangerButton");
         }
         else
         {
             StatusLabel.Text       = "● Stopped";
             StatusLabel.Foreground = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0x5A, 0x9A, 0x5A));
+                System.Windows.Media.Color.FromRgb(0x66, 0x66, 0x80));
             StatusPill.Background  = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0x2A, 0x3A, 0x2A));
-            RoleLabel.Text = "Virtual desktop sync over RDP";
+                System.Windows.Media.Color.FromRgb(0x2A, 0x2A, 0x38));
+            StartButton.Content = "▶  Start";
+            StartButton.Style   = (Style)FindResource("PrimaryButton");
         }
+    }
+
+    private void Toggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isRunning) Stop_Click(sender, e);
+        else Start_Click(sender, e);
     }
 
     // ── Network callbacks (arrive on background threads) ─────────────────────
@@ -379,7 +459,10 @@ public partial class MainWindow : Window
             switch (msg.Type)
             {
                 case "STATE_UPDATE":
-                    UpsertMachineInfo(machineName, msg);
+                    // Use msg.MachineName (the originator) not machineName (the TCP relay hop).
+                    // If a STATE_UPDATE from C is relayed through B, machineName would be "B",
+                    // which would overwrite B's entry with C's desktop/wallpaper data.
+                    UpsertMachineInfo(msg.MachineName ?? machineName, msg);
                     break;
 
                 // Only non-server machines act on desktop-switch commands.
@@ -413,8 +496,10 @@ public partial class MainWindow : Window
         {
             var info = GetOrAdd(machineName);
             info.IsConnected = true;
+            info.IsIndirect  = false;  // now directly connected
             // Share our current state with the newly connected peer.
             BroadcastOurState();
+            RefreshStatusLabel();
         });
     }
 
@@ -426,6 +511,7 @@ public partial class MainWindow : Window
                 m.MachineName.Equals(machineName, StringComparison.OrdinalIgnoreCase));
             if (info != null)
                 info.IsConnected = false;
+            RefreshStatusLabel();
         });
     }
 
@@ -550,17 +636,39 @@ public partial class MainWindow : Window
         info.IsRdpServer         = msg.IsRdpServer;
         info.IsConnected         = true;
         info.RdpPeers            = msg.RdpPeers            ?? new();
+        info.RdpHostedServers    = msg.RdpHostedServers != null
+            ? new Dictionary<string, int>(
+                msg.RdpHostedServers.ToDictionary(
+                    kv => MachineInfo.NormalizeHostname(kv.Key),
+                    kv => kv.Value),
+                StringComparer.OrdinalIgnoreCase)
+            : new();
         info.DesktopNames        = msg.DesktopNames        ?? new();
         info.WallpaperThumbnails = msg.WallpaperThumbnails ?? new();
+
+        // Ensure every machine the sender knows about appears in our list.
+        // We only add entries — we never downgrade a directly-connected peer to offline.
+        var localName = _networkManager?.LocalMachineName ?? Environment.MachineName;
+        foreach (var peer in info.RdpPeers)
+        {
+            if (string.IsNullOrWhiteSpace(peer)) continue;
+            if (peer.Equals(localName, StringComparison.OrdinalIgnoreCase)) continue;
+            var peerInfo = GetOrAdd(peer);
+            // Only mark as indirect if not already directly connected.
+            if (!peerInfo.IsConnected)
+                peerInfo.IsIndirect = true;
+        }
+        RefreshStatusLabel();
     }
 
     private MachineInfo GetOrAdd(string machineName)
     {
+        var normalized = MachineInfo.NormalizeHostname(machineName);
         var info = Connections.FirstOrDefault(m =>
-            m.MachineName.Equals(machineName, StringComparison.OrdinalIgnoreCase));
+            m.MachineName.Equals(normalized, StringComparison.OrdinalIgnoreCase));
         if (info == null)
         {
-            info = new MachineInfo { MachineName = machineName };
+            info = new MachineInfo { MachineName = normalized };
             Connections.Add(info);
         }
         return info;
@@ -584,6 +692,12 @@ public partial class MainWindow : Window
                 TotalDesktops       = VirtualDesktopHelper.GetTotalDesktopCount(),
                 IsRdpServer         = _isRdpServer,
                 RdpPeers            = _networkManager.ConnectedPeers.ToList(),
+                RdpHostedServers    = _isRdpServer ? null
+                    : RdpWindowLocator.GetRdpDesktopMap(_networkManager.ConnectedPeers.ToList())
+                        .ToDictionary(
+                            kv => MachineInfo.NormalizeHostname(kv.Key),
+                            kv => kv.Value,
+                            StringComparer.OrdinalIgnoreCase),
                 DesktopNames        = apiDesktops.Select(d => d.DisplayName).ToList(),
                 WallpaperThumbnails = apiDesktops.Select(d => EncodeWallpaperThumbnail(d.WallpaperPath) ?? "").ToList()
             };

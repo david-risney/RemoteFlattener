@@ -38,6 +38,9 @@ public partial class TreeWindow : Window
     // Last-computed mstsc window → local desktop index mapping.
     private Dictionary<string, int> _rdpDesktopMap = new(StringComparer.OrdinalIgnoreCase);
 
+    // Cached on each BuildTree call so DesktopRowsFor() (now an instance method) can access it.
+    private VirtualDesktopProvider.DesktopInfo[] _localApiDesktops = Array.Empty<VirtualDesktopProvider.DesktopInfo>();
+
     /// <summary>Unified per-desktop row data used for both local and remote machines.</summary>
     private sealed record DesktopRow(
         int     Index,
@@ -158,31 +161,30 @@ public partial class TreeWindow : Window
         all.AddRange(_peers);
 
         var localApiDesktops = VirtualDesktopProvider.GetAllDesktops();
+        _localApiDesktops    = localApiDesktops;   // cache for GetDesktopRowsFor()
         var allMachineNames  = _peers.Select(p => p.MachineName).ToList();
-        _rdpDesktopMap = _localIsRdpServer
-            ? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-            : RdpWindowLocator.GetRdpDesktopMap(allMachineNames);
 
-        DesktopRow[] DesktopRowsFor(MachineInfo m)
+        // Build the local RdpDesktopMap — only meaningful on a client (non-server) node.
+        // This maps serverName → local desktop index via live window scan.
+        // We also store it back onto localMachineInfo so BuildTree can use the same
+        // code path for both local and remote client peers.
+        Dictionary<string, int> localRdpMap;
+        if (!_localIsRdpServer)
         {
-            var isLocal = m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase);
-            if (isLocal && localApiDesktops.Length > 0)
-            {
-                return localApiDesktops.Select(d =>
-                    new DesktopRow(d.Index, d.DisplayName, d.IsCurrent, d.Id, d.WallpaperPath, null, m.MachineName, true)
-                ).ToArray();
-            }
-            if (m.TotalDesktops <= 0) return Array.Empty<DesktopRow>();
-            var rows = new DesktopRow[m.TotalDesktops];
-            for (int i = 0; i < m.TotalDesktops; i++)
-            {
-                var name  = i < m.DesktopNames.Count        ? m.DesktopNames[i]        : $"Desktop {i + 1}";
-                var thumb = i < m.WallpaperThumbnails.Count ? m.WallpaperThumbnails[i] : null;
-                if (string.IsNullOrEmpty(thumb)) thumb = null;
-                rows[i] = new DesktopRow(i + 1, name, m.CurrentDesktop == i + 1, null, null, thumb, m.MachineName, false);
-            }
-            return rows;
+            localRdpMap = RdpWindowLocator.GetRdpDesktopMap(allMachineNames);
+            localMachineInfo.RdpHostedServers = new Dictionary<string, int>(
+                localRdpMap.ToDictionary(
+                    kv => MachineInfo.NormalizeHostname(kv.Key),
+                    kv => kv.Value),
+                StringComparer.OrdinalIgnoreCase);
         }
+        else
+        {
+            localRdpMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        }
+        _rdpDesktopMap = localRdpMap;
+
+        DesktopRow[] DesktopRowsFor(MachineInfo m) => GetDesktopRowsFor(m);
 
         var serverNodes = all
             .Where(m => m.IsRdpServer && !m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase))
@@ -193,56 +195,45 @@ public partial class TreeWindow : Window
         shown.Add(_localMachineName);
         var localRoot = MakeMachineItem(localMachineInfo, isLocal: true);
 
-        if (!_localIsRdpServer && localApiDesktops.Length > 0)
+        if (_localIsRdpServer)
         {
-            var serversByDesktop = serverNodes
-                .Where(s => _rdpDesktopMap.ContainsKey(s.MachineName))
-                .GroupBy(s => _rdpDesktopMap[s.MachineName])
-                .ToDictionary(g => g.Key, g => g.ToList());
-            var unlocatedServers = serverNodes
-                .Where(s => !_rdpDesktopMap.ContainsKey(s.MachineName))
-                .ToList();
+            // ── Server path ─────────────────────────────────────────────────
+            AddDesktopChildren(localRoot, DesktopRowsFor(localMachineInfo));
 
-            foreach (var d in localApiDesktops)
+            // Find the hosting client: prefer RdpHostedServers (authoritative),
+            // fall back to RdpPeers (name-only), then any connected non-server peer.
+            var hostingClient = _peers.FirstOrDefault(p =>
+                !p.IsRdpServer &&
+                p.RdpHostedServers.ContainsKey(_localMachineName));
+            hostingClient ??= _peers.FirstOrDefault(p =>
+                !p.IsRdpServer &&
+                p.RdpPeers.Any(rp =>
+                    MachineInfo.NormalizeHostname(rp)
+                        .Equals(_localMachineName, StringComparison.OrdinalIgnoreCase)));
+            // Last resort: any connected/known non-server peer is likely our host.
+            // This fires when the client's state hasn't been received yet.
+            hostingClient ??= _peers.FirstOrDefault(p =>
+                !p.IsRdpServer && (p.IsConnected || p.IsIndirect));
+
+            if (hostingClient != null)
             {
-                var row   = new DesktopRow(d.Index, d.DisplayName, d.IsCurrent, d.Id, d.WallpaperPath, null, _localMachineName, true);
-                var dItem = MakeDesktopTreeViewItem(row);
-
-                if (serversByDesktop.TryGetValue(d.Index, out var serversHere))
-                {
-                    foreach (var s in serversHere)
-                    {
-                        shown.Add(s.MachineName);
-                        var sItem = MakeMachineItem(s, isLocal: false, indent: true);
-                        AddDesktopChildren(sItem, DesktopRowsFor(s));
-                        dItem.Items.Add(sItem);
-                        dItem.IsExpanded = true;
-                    }
-                }
-                localRoot.Items.Add(dItem);
+                shown.Add(hostingClient.MachineName);
+                var clientRoot = MakeMachineItem(hostingClient, isLocal: false);
+                AddDesktopChildrenWithNestedServers(clientRoot, hostingClient, all, shown, localRoot);
+                clientRoot.IsExpanded = true;
+                NetworkTree.Items.Add(clientRoot);
             }
-
-            foreach (var s in unlocatedServers)
+            else
             {
-                shown.Add(s.MachineName);
-                var sItem = MakeMachineItem(s, isLocal: false, indent: true);
-                AddDesktopChildren(sItem, DesktopRowsFor(s));
-                localRoot.Items.Add(sItem);
+                NetworkTree.Items.Add(localRoot);
             }
         }
         else
         {
-            AddDesktopChildren(localRoot, DesktopRowsFor(localMachineInfo));
-            foreach (var s in serverNodes)
-            {
-                shown.Add(s.MachineName);
-                var sItem = MakeMachineItem(s, isLocal: false, indent: true);
-                AddDesktopChildren(sItem, DesktopRowsFor(s));
-                localRoot.Items.Add(sItem);
-            }
+            // ── Client (local) path ──────────────────────────────────────────
+            AddDesktopChildrenWithNestedServers(localRoot, localMachineInfo, all, shown, localServerNode: null);
+            NetworkTree.Items.Add(localRoot);
         }
-
-        NetworkTree.Items.Add(localRoot);
 
         // ── Remote client peers ──────────────────────────────────────────────
         var clientPeers = all.Where(m => !m.IsRdpServer && !shown.Contains(m.MachineName)).ToList();
@@ -251,13 +242,6 @@ public partial class TreeWindow : Window
             shown.Add(client.MachineName);
             var clientItem = MakeMachineItem(client, isLocal: false);
             AddDesktopChildren(clientItem, DesktopRowsFor(client));
-            foreach (var s in serverNodes.Where(s => !shown.Contains(s.MachineName)))
-            {
-                shown.Add(s.MachineName);
-                var sItem = MakeMachineItem(s, isLocal: false, indent: true);
-                AddDesktopChildren(sItem, DesktopRowsFor(s));
-                clientItem.Items.Add(sItem);
-            }
             NetworkTree.Items.Add(clientItem);
         }
 
@@ -447,6 +431,92 @@ public partial class TreeWindow : Window
     {
         foreach (var d in desktops)
             parent.Items.Add(MakeDesktopTreeViewItem(d));
+    }
+
+    private DesktopRow[] GetDesktopRowsFor(MachineInfo m)
+    {
+        var isLocal = m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase);
+        if (isLocal && _localApiDesktops.Length > 0)
+        {
+            return _localApiDesktops.Select(d =>
+                new DesktopRow(d.Index, d.DisplayName, d.IsCurrent, d.Id, d.WallpaperPath, null, m.MachineName, true)
+            ).ToArray();
+        }
+        if (m.TotalDesktops <= 0) return Array.Empty<DesktopRow>();
+        var rows = new DesktopRow[m.TotalDesktops];
+        for (int i = 0; i < m.TotalDesktops; i++)
+        {
+            var name  = i < m.DesktopNames.Count        ? m.DesktopNames[i]        : $"Desktop {i + 1}";
+            var thumb = i < m.WallpaperThumbnails.Count ? m.WallpaperThumbnails[i] : null;
+            if (string.IsNullOrEmpty(thumb)) thumb = null;
+            rows[i] = new DesktopRow(i + 1, name, m.CurrentDesktop == i + 1, null, null, thumb, m.MachineName, false);
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// Adds desktop rows to <paramref name="clientItem"/> and, for each desktop,
+    /// nests any server whose mstsc window lives there according to the client's
+    /// <see cref="MachineInfo.RdpHostedServers"/> map.  Works identically whether
+    /// the client is the local machine or a remote peer — both carry the same map.
+    /// <paramref name="localServerNode"/> is non-null when we are the server: it is
+    /// the pre-built local-machine node that should be nested on the correct desktop.
+    /// </summary>
+    private void AddDesktopChildrenWithNestedServers(
+        TreeViewItem clientItem, MachineInfo client,
+        List<MachineInfo> all, HashSet<string> shown,
+        TreeViewItem? localServerNode)
+    {
+        var desktops = GetDesktopRowsFor(client);
+        if (desktops.Length == 0) return;
+
+        // Group remote servers by desktop index from the broadcast map.
+        var hostedMap = client.RdpHostedServers;
+        var serversByDesktop = all
+            .Where(m => m.IsRdpServer &&
+                        !m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase))
+            .Where(s => hostedMap.ContainsKey(s.MachineName))
+            .GroupBy(s => hostedMap[s.MachineName])
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        // If we're the server, find which desktop index we belong to.
+        int localServerDesktopIdx = localServerNode != null && hostedMap.ContainsKey(_localMachineName)
+            ? hostedMap[_localMachineName]
+            : -1;
+
+        bool localServerPlaced = false;
+        foreach (var d in desktops)
+        {
+            var dItem = MakeDesktopTreeViewItem(d);
+
+            // Nest the local server node on its hosting desktop.
+            if (localServerNode != null && d.Index == localServerDesktopIdx)
+            {
+                dItem.Items.Add(localServerNode);
+                dItem.IsExpanded = true;
+                localServerPlaced = true;
+            }
+
+            // Nest any remote server peers on their hosting desktop.
+            if (serversByDesktop.TryGetValue(d.Index, out var serversHere))
+            {
+                foreach (var s in serversHere)
+                {
+                    shown.Add(s.MachineName);
+                    var sItem = MakeMachineItem(s, isLocal: false, indent: true);
+                    AddDesktopChildren(sItem, GetDesktopRowsFor(s));
+                    dItem.Items.Add(sItem);
+                    dItem.IsExpanded = true;
+                }
+            }
+
+            clientItem.Items.Add(dItem);
+        }
+
+        // If desktop-index data was unavailable, still nest the local server directly
+        // under the client rather than leaving it orphaned or at the tree root.
+        if (localServerNode != null && !localServerPlaced)
+            clientItem.Items.Insert(0, localServerNode);
     }
 
     private TreeViewItem MakeDesktopTreeViewItem(DesktopRow d)

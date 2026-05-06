@@ -16,6 +16,10 @@ public class NetworkMessage
     [JsonPropertyName("hmac")]
     public string? Hmac { get; set; }
 
+    /// <summary>Wire protocol version exchanged during handshake. Peers with different versions are rejected.</summary>
+    [JsonPropertyName("protocolVersion")]
+    public int ProtocolVersion { get; set; }
+
     [JsonPropertyName("currentDesktop")]
     public int CurrentDesktop { get; set; }
 
@@ -27,6 +31,14 @@ public class NetworkMessage
 
     [JsonPropertyName("rdpPeers")]
     public List<string>? RdpPeers { get; set; }
+
+    /// <summary>
+    /// Sent by RDP-client machines only.  Maps server machine name → the local desktop index
+    /// on which that server's mstsc window lives.  Allows every node in the mesh to place
+    /// servers under the correct desktop row in the Network Tree, not just the client itself.
+    /// </summary>
+    [JsonPropertyName("rdpHostedServers")]
+    public Dictionary<string, int>? RdpHostedServers { get; set; }
 
     [JsonPropertyName("desktopNames")]
     public List<string>? DesktopNames { get; set; }
