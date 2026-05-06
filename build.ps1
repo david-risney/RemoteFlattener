@@ -19,7 +19,31 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $proj    = "$PSScriptRoot\RemoteFlattener\RemoteFlattener.csproj"
-$pubExe  = "$PSScriptRoot\publish\RemoteFlattener.exe"
+
+# The published exe may land in different locations depending on the machine/SDK.
+# Search known candidate paths and use the first one found.
+function Find-PublishedExe {
+    $candidates = @(
+        "$PSScriptRoot\publish\RemoteFlattener.exe",
+        "$PSScriptRoot\RemoteFlattener\bin\Release\net8.0-windows10.0.19041.0\publish\RemoteFlattener.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    # Return the first candidate as the default (for messages when nothing exists yet)
+    return $candidates[0]
+}
+
+function Find-DebugExe {
+    $candidates = @(
+        "$PSScriptRoot\RemoteFlattener\bin\Debug\net8.0-windows10.0.19041.0\RemoteFlattener.exe",
+        "$PSScriptRoot\RemoteFlattener\bin\Debug\net8.0-windows\RemoteFlattener.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    return $candidates[0]
+}
 
 # ── Ensure .NET 8 SDK is installed ──────────────────────────────────────────
 function Ensure-DotnetSdk {
@@ -66,23 +90,25 @@ function Stop-RemoteFlattener {
 }
 
 function Start-RemoteFlattenerIfNotRunning {
-    if (-not (Test-Path $pubExe)) {
-        Write-Warning "Published exe not found at '$pubExe' – skipping launch."
+    $exe = Find-PublishedExe
+    if (-not (Test-Path $exe)) {
+        Write-Warning "Published exe not found – skipping launch."
         return
     }
     $running = Get-Process -Name 'RemoteFlattener' -ErrorAction SilentlyContinue
     if (-not $running) {
-        Start-Process $pubExe
+        Start-Process $exe
         Write-Host "  Started RemoteFlattener." -ForegroundColor Green
     }
 }
 
 function Start-RemoteFlattener {
-    if (-not (Test-Path $pubExe)) {
-        Write-Warning "Published exe not found at '$pubExe' – skipping launch."
+    $exe = Find-PublishedExe
+    if (-not (Test-Path $exe)) {
+        Write-Warning "Published exe not found – skipping launch."
         return
     }
-    Start-Process $pubExe
+    Start-Process $exe
     Write-Host "  Started RemoteFlattener." -ForegroundColor Green
 }
 
@@ -93,13 +119,18 @@ switch ($Task) {
     'run' {
         dotnet build $proj -c Debug
         if ($LASTEXITCODE -eq 0) {
-            $exe = "$PSScriptRoot\RemoteFlattener\bin\Debug\net8.0-windows10.0.19041.0\RemoteFlattener.exe"
-            Start-Process $exe
+            $exe = Find-DebugExe
+            if (-not (Test-Path $exe)) {
+                Write-Warning "Debug exe not found – skipping launch."
+            } else {
+                Start-Process $exe
+            }
         }
     }
     'publish' {
         Invoke-Publish
-        Write-Host "Published to: $pubExe" -ForegroundColor Green
+        $exe = Find-PublishedExe
+        Write-Host "Published to: $exe" -ForegroundColor Green
     }
     'clean' {
         Remove-Item "$PSScriptRoot\RemoteFlattener\bin"     -Recurse -Force -ErrorAction SilentlyContinue
