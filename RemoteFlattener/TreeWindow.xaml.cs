@@ -121,8 +121,13 @@ public partial class TreeWindow : Window
     private void OnLocalDesktopChanged() =>
         Dispatcher.BeginInvoke(ScheduleRefresh);
 
+    // Suppresses tree rebuilds while the user is actively navigating with arrow keys,
+    // so the highlight doesn't jump or reset mid-keypress.
+    private bool _navKeyActive;
+
     private void ScheduleRefresh()
     {
+        if (_navKeyActive) return;
         _refreshTimer.Stop();
         _refreshTimer.Start();
     }
@@ -351,52 +356,9 @@ public partial class TreeWindow : Window
             VerticalAlignment = VerticalAlignment.Center
         };
 
-        var roleBg = info.IsRdpServer
-            ? Color.FromArgb(0xFF, 0x25, 0x3D, 0x66)
-            : Color.FromArgb(0xFF, 0x20, 0x45, 0x2A);
-        var roleFg = info.IsRdpServer
-            ? Color.FromRgb(0x7A, 0xAD, 0xFF)
-            : Color.FromRgb(0x6A, 0xCC, 0x7A);
-        var rolePill = new Border
-        {
-            Background        = new SolidColorBrush(roleBg),
-            CornerRadius      = new CornerRadius(4),
-            Padding           = new Thickness(6, 2, 6, 2),
-            Margin            = new Thickness(8, 0, 0, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock
-            {
-                Text       = info.IsRdpServer ? "SERVER" : "CLIENT",
-                Foreground = new SolidColorBrush(roleFg),
-                FontSize   = 9,
-                FontWeight = FontWeights.Bold,
-                FontFamily = new FontFamily("Segoe UI")
-            }
-        };
-
         var topRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         topRow.Children.Add(dot);
         topRow.Children.Add(nameBlock);
-        topRow.Children.Add(rolePill);
-        if (isLocal)
-        {
-            topRow.Children.Add(new Border
-            {
-                Background        = new SolidColorBrush(Color.FromArgb(45, 0x60, 0xB8, 0xFF)),
-                CornerRadius      = new CornerRadius(4),
-                Padding           = new Thickness(6, 2, 6, 2),
-                Margin            = new Thickness(6, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock
-                {
-                    Text       = "YOU",
-                    Foreground = new SolidColorBrush(Color.FromRgb(0x60, 0xB8, 0xFF)),
-                    FontSize   = 9,
-                    FontWeight = FontWeights.Bold,
-                    FontFamily = new FontFamily("Segoe UI")
-                }
-            });
-        }
 
         var subtitleText = !info.IsConnected
             ? "Offline"
@@ -704,8 +666,10 @@ public partial class TreeWindow : Window
             case Key.Up:
                 if (_navItems.Count > 0)
                 {
+                    _navKeyActive = true;
                     _navIndex = _navIndex <= 0 ? _navItems.Count - 1 : _navIndex - 1;
                     ApplyNavHighlight();
+                    _navKeyActive = false;
                     e.Handled = true;
                 }
                 break;
@@ -713,8 +677,10 @@ public partial class TreeWindow : Window
             case Key.Down:
                 if (_navItems.Count > 0)
                 {
+                    _navKeyActive = true;
                     _navIndex = _navIndex >= _navItems.Count - 1 ? 0 : _navIndex + 1;
                     ApplyNavHighlight();
+                    _navKeyActive = false;
                     e.Handled = true;
                 }
                 break;

@@ -9,7 +9,7 @@
         ShowInTaskbar="False"
         WindowState="Maximized"
         MouseDown="Window_MouseDown"
-        KeyDown="Window_KeyDown"
+        PreviewKeyDown="Window_KeyDown"
         Focusable="True">
     <Grid>
         <Rectangle Fill="Transparent"/>
