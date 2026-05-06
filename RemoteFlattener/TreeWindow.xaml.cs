@@ -436,11 +436,12 @@ public partial class TreeWindow : Window
             parent.Items.Add(MakeDesktopTreeViewItem(d));
     }
 
-    private DesktopRow[] GetDesktopRowsFor(MachineInfo m)
+    private DesktopRow[] GetDesktopRowsFor(MachineInfo m, bool parentIsActive = true)
     {
         var isLocal = m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase);
         if (isLocal && _localApiDesktops.Length > 0)
         {
+            // Local machine: always use real API data regardless of parent context.
             return _localApiDesktops.Select(d =>
                 new DesktopRow(d.Index, d.DisplayName, d.IsCurrent, d.Id, d.WallpaperPath, null, m.MachineName, true)
             ).ToArray();
@@ -452,7 +453,10 @@ public partial class TreeWindow : Window
             var name  = i < m.DesktopNames.Count        ? m.DesktopNames[i]        : $"Desktop {i + 1}";
             var thumb = i < m.WallpaperThumbnails.Count ? m.WallpaperThumbnails[i] : null;
             if (string.IsNullOrEmpty(thumb)) thumb = null;
-            rows[i] = new DesktopRow(i + 1, name, m.CurrentDesktop == i + 1, null, null, thumb, m.MachineName, false);
+            // A remote desktop is only "current" (shows Active, Switch disabled) when the
+            // parent context is also active — i.e. the full path from root is currently displayed.
+            var isCurrent = parentIsActive && m.CurrentDesktop == i + 1;
+            rows[i] = new DesktopRow(i + 1, name, isCurrent, null, null, thumb, m.MachineName, false);
         }
         return rows;
     }
@@ -509,7 +513,10 @@ public partial class TreeWindow : Window
                 {
                     shown.Add(s.MachineName);
                     var sItem = MakeMachineItem(s, isLocal: false, indent: true);
-                    AddDesktopChildren(sItem, GetDesktopRowsFor(s));
+                    // Pass d.IsCurrent as parentIsActive: a server's desktop only shows
+                    // "Active" and has Switch disabled when its parent client desktop is
+                    // currently the active one (i.e. the mstsc window is visible).
+                    AddDesktopChildren(sItem, GetDesktopRowsFor(s, parentIsActive: d.IsCurrent));
                     dItem.Items.Add(sItem);
                     dItem.IsExpanded = true;
                 }
