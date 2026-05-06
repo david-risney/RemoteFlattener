@@ -71,8 +71,10 @@ function Invoke-Restore {
     if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed (exit $LASTEXITCODE)." }
 }
 
-Ensure-DotnetSdk
-Invoke-Restore
+if ($Task -ne 'clean') {
+    Ensure-DotnetSdk
+    Invoke-Restore
+}
 
 function Invoke-Publish {
     dotnet publish $proj -p:PublishProfile=SingleFile
@@ -115,6 +117,7 @@ function Start-RemoteFlattener {
 switch ($Task) {
     'build' {
         dotnet build $proj -c Debug
+        if ($LASTEXITCODE -ne 0) { throw "dotnet build failed (exit $LASTEXITCODE)." }
     }
     'run' {
         dotnet build $proj -c Debug
@@ -156,6 +159,7 @@ switch ($Task) {
             }
 
             # Seed $lastBuildTime from the published exe (or epoch when it doesn't exist yet).
+            $pubExe = Find-PublishedExe
             $lastBuildTime = if (Test-Path $pubExe) {
                 (Get-Item $pubExe).LastWriteTime
             } else {
