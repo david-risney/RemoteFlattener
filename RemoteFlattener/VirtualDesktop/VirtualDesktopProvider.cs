@@ -143,85 +143,49 @@ public static class VirtualDesktopProvider
     /// Switches directly to the desktop with the given <paramref name="id"/>.
     /// Returns true on success.
     /// </summary>
-    public static bool SwitchToDesktop(Guid id)
+    public static bool SwitchToDesktop(Guid id) => Try(() =>
     {
-        if (!_available) return false;
-        try
-        {
-            var desktop = WindowsDesktop.VirtualDesktop.FromId(id);
-            if (desktop == null) return false;
-            desktop.Switch();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            MarkUnavailable(ex);
-            return false;
-        }
-    }
+        var desktop = WindowsDesktop.VirtualDesktop.FromId(id);
+        if (desktop == null) return false;
+        desktop.Switch();
+        return true;
+    }, false);
 
     /// <summary>
     /// Switches to the desktop at the given 1-based <paramref name="index"/>.
     /// Returns true on success.
     /// </summary>
-    public static bool SwitchToIndex(int index)
+    public static bool SwitchToIndex(int index) => Try(() =>
     {
-        if (!_available) return false;
-        try
-        {
-            var desktops = WindowsDesktop.VirtualDesktop.GetDesktops();
-            if (index < 1 || index > desktops.Length) return false;
-            desktops[index - 1].Switch();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            MarkUnavailable(ex);
-            return false;
-        }
-    }
+        var desktops = WindowsDesktop.VirtualDesktop.GetDesktops();
+        if (index < 1 || index > desktops.Length) return false;
+        desktops[index - 1].Switch();
+        return true;
+    }, false);
 
     /// <summary>
     /// Switches to the desktop immediately to the left of the current one.
     /// Returns true on success, false if there is no desktop to the left or the API failed.
     /// </summary>
-    public static bool SwitchLeft()
+    public static bool SwitchLeft() => Try(() =>
     {
-        if (!_available) return false;
-        try
-        {
-            var left = WindowsDesktop.VirtualDesktop.Current.GetLeft();
-            if (left == null) return false;
-            left.Switch();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            MarkUnavailable(ex);
-            return false;
-        }
-    }
+        var left = WindowsDesktop.VirtualDesktop.Current.GetLeft();
+        if (left == null) return false;
+        left.Switch();
+        return true;
+    }, false);
 
     /// <summary>
     /// Switches to the desktop immediately to the right of the current one.
     /// Returns true on success, false if there is no desktop to the right or the API failed.
     /// </summary>
-    public static bool SwitchRight()
+    public static bool SwitchRight() => Try(() =>
     {
-        if (!_available) return false;
-        try
-        {
-            var right = WindowsDesktop.VirtualDesktop.Current.GetRight();
-            if (right == null) return false;
-            right.Switch();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            MarkUnavailable(ex);
-            return false;
-        }
-    }
+        var right = WindowsDesktop.VirtualDesktop.Current.GetRight();
+        if (right == null) return false;
+        right.Switch();
+        return true;
+    }, false);
 
     // ── Window → desktop queries ──────────────────────────────────────────────
 
@@ -267,5 +231,16 @@ public static class VirtualDesktopProvider
         catch { }
         AppLogger.Log($"VirtualDesktop API failed mid-session ({ex.GetType().Name}: {ex.Message}). " +
                       "Falling back to registry/SendInput for remainder of session.");
+    }
+
+    /// <summary>
+    /// Executes <paramref name="fn"/> when the API is available, catching any exception
+    /// and marking the provider unavailable.  Returns <paramref name="fallback"/> on failure.
+    /// </summary>
+    private static T Try<T>(Func<T> fn, T fallback)
+    {
+        if (!_available) return fallback;
+        try { return fn(); }
+        catch (Exception ex) { MarkUnavailable(ex); return fallback; }
     }
 }

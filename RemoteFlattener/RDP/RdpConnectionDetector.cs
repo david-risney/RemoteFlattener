@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
+using RemoteFlattener.Models;
 
 namespace RemoteFlattener.RDP;
 
@@ -23,32 +24,52 @@ public static class RdpConnectionDetector
     public static IReadOnlyList<string> GetRdpPeerHostnames()
     {
         var localHostname = Environment.MachineName;
-        var remoteAddresses = new HashSet<IPAddress>();
+        var addresses = ExtractRdpAddresses(
+            IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections());
+        return ResolveToHostnames(addresses, localHostname,
+            addr => Dns.GetHostEntry(addr).HostName);
+    }
 
-        foreach (var conn in IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections())
+    /// <summary>
+    /// Returns the unique remote IP addresses of all established TCP connections
+    /// where either endpoint is on port <see cref="RdpPort"/>.
+    /// Extracted for unit testing without live network state.
+    /// </summary>
+    internal static IEnumerable<IPAddress> ExtractRdpAddresses(
+        IEnumerable<TcpConnectionInformation> connections)
+    {
+        var seen = new HashSet<IPAddress>();
+        foreach (var conn in connections)
         {
             if (conn.State != TcpState.Established) continue;
-
-            // Collect the remote address when either end is port 3389.
-            if (conn.LocalEndPoint.Port == RdpPort)
-                remoteAddresses.Add(conn.RemoteEndPoint.Address);
-            else if (conn.RemoteEndPoint.Port == RdpPort)
-                remoteAddresses.Add(conn.RemoteEndPoint.Address);
+            if (conn.LocalEndPoint.Port  == RdpPort) seen.Add(conn.RemoteEndPoint.Address);
+            else if (conn.RemoteEndPoint.Port == RdpPort) seen.Add(conn.RemoteEndPoint.Address);
         }
+        return seen;
+    }
 
+    /// <summary>
+    /// Resolves each IP to a short hostname via <paramref name="resolveHostname"/>,
+    /// then filters out loopback and the local machine.
+    /// Falls back to the raw IP string if <paramref name="resolveHostname"/> throws.
+    /// Extracted for unit testing with a fake resolver.
+    /// </summary>
+    internal static IReadOnlyList<string> ResolveToHostnames(
+        IEnumerable<IPAddress> addresses,
+        string localHostname,
+        Func<IPAddress, string> resolveHostname)
+    {
         var results = new List<string>();
-        foreach (var addr in remoteAddresses)
+        foreach (var addr in addresses)
         {
             if (IPAddress.IsLoopback(addr)) continue;
 
             string hostname;
             try
             {
-                hostname = Dns.GetHostEntry(addr).HostName;
-                // Strip the FQDN to just the short machine name so it matches what
-                // Environment.MachineName returns on the peer.
-                var dot = hostname.IndexOf('.');
-                if (dot > 0) hostname = hostname[..dot];
+                // NormalizeHostname strips the FQDN to just the short machine name
+                // so it matches what Environment.MachineName returns on the peer.
+                hostname = MachineInfo.NormalizeHostname(resolveHostname(addr));
             }
             catch
             {
@@ -58,7 +79,6 @@ public static class RdpConnectionDetector
             if (!hostname.Equals(localHostname, StringComparison.OrdinalIgnoreCase))
                 results.Add(hostname);
         }
-
         return results;
     }
 }

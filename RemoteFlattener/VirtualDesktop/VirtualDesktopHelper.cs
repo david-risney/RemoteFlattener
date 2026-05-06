@@ -76,14 +76,25 @@ public static class VirtualDesktopHelper
             if (currentData == null || currentData.Length < 16 || allData == null) return 1;
 
             var currentGuid = new Guid(currentData[..16]);
-            int count = allData.Length / 16;
-            for (int i = 0; i < count; i++)
-            {
-                var guid = new Guid(allData[(i * 16)..((i + 1) * 16)]);
-                if (guid == currentGuid) return i + 1;
-            }
+            int result = FindGuidIndex(currentGuid, allData);
+            if (result > 0) return result;
         }
         catch (Exception ex) when (ex is IOException or SecurityException or UnauthorizedAccessException) { }
         return 1;
+    }
+
+    /// <summary>
+    /// Searches <paramref name="allGuids"/> (packed 16-byte GUID array) for
+    /// <paramref name="current"/> and returns its 1-based index, or 0 if not found.
+    /// </summary>
+    internal static int FindGuidIndex(Guid current, byte[] allGuids)
+    {
+        int count = allGuids.Length / 16;
+        for (int i = 0; i < count; i++)
+        {
+            if (new Guid(allGuids[(i * 16)..((i + 1) * 16)]) == current)
+                return i + 1;
+        }
+        return 0;
     }
 }

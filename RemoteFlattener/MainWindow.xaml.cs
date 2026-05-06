@@ -458,7 +458,7 @@ public partial class MainWindow : Window
         {
             switch (msg.Type)
             {
-                case "STATE_UPDATE":
+                case MessageTypes.StateUpdate:
                     // Use msg.MachineName (the originator) not machineName (the TCP relay hop).
                     // If a STATE_UPDATE from C is relayed through B, machineName would be "B",
                     // which would overwrite B's entry with C's desktop/wallpaper data.
@@ -466,23 +466,23 @@ public partial class MainWindow : Window
                     break;
 
                 // Only non-server machines act on desktop-switch commands.
-                case "SWITCH_DESKTOP_LEFT" when !_isRdpServer:
-                    AppLogger.Log($"Received SWITCH_DESKTOP_LEFT from {machineName} — switching local desktop left.");
+                case MessageTypes.SwitchLeft when !_isRdpServer:
+                    AppLogger.Log($"Received {MessageTypes.SwitchLeft} from {machineName} — switching local desktop left.");
                     VirtualDesktopSwitcher.SwitchLeft(new WindowInteropHelper(this).Handle);
                     break;
 
-                case "SWITCH_DESKTOP_RIGHT" when !_isRdpServer:
-                    AppLogger.Log($"Received SWITCH_DESKTOP_RIGHT from {machineName} — switching local desktop right.");
+                case MessageTypes.SwitchRight when !_isRdpServer:
+                    AppLogger.Log($"Received {MessageTypes.SwitchRight} from {machineName} — switching local desktop right.");
                     VirtualDesktopSwitcher.SwitchRight(new WindowInteropHelper(this).Handle);
                     break;
 
-                case "TASK_VIEW":
-                    AppLogger.Log($"Received TASK_VIEW from {machineName} — invoking Task View.");
+                case MessageTypes.TaskView:
+                    AppLogger.Log($"Received {MessageTypes.TaskView} from {machineName} — invoking Task View.");
                     InvokeTaskView();
                     break;
 
-                case "SWITCH_TO_DESKTOP_INDEX":
-                    AppLogger.Log($"Received SWITCH_TO_DESKTOP_INDEX ({msg.CurrentDesktop}) from {machineName}.");
+                case MessageTypes.SwitchToDesktop:
+                    AppLogger.Log($"Received {MessageTypes.SwitchToDesktop} ({msg.CurrentDesktop}) from {machineName}.");
                     if (!VirtualDesktopProvider.SwitchToIndex(msg.CurrentDesktop))
                         AppLogger.Log("VirtualDesktop API unavailable — cannot switch to specific desktop index.");
                     break;
@@ -546,15 +546,15 @@ public partial class MainWindow : Window
     private void OnSendSwitchLeft()
     {
         if (!TryAcquireSwitchCooldown("LEFT")) return;
-        AppLogger.Log("Broadcasting SWITCH_DESKTOP_LEFT to all peers.");
-        _networkManager?.BroadcastAsync(new NetworkMessage { Type = "SWITCH_DESKTOP_LEFT" });
+        AppLogger.Log($"Broadcasting {MessageTypes.SwitchLeft} to all peers.");
+        _networkManager?.BroadcastAsync(new NetworkMessage { Type = MessageTypes.SwitchLeft });
     }
 
     private void OnSendSwitchRight()
     {
         if (!TryAcquireSwitchCooldown("RIGHT")) return;
-        AppLogger.Log("Broadcasting SWITCH_DESKTOP_RIGHT to all peers.");
-        _networkManager?.BroadcastAsync(new NetworkMessage { Type = "SWITCH_DESKTOP_RIGHT" });
+        AppLogger.Log($"Broadcasting {MessageTypes.SwitchRight} to all peers.");
+        _networkManager?.BroadcastAsync(new NetworkMessage { Type = MessageTypes.SwitchRight });
     }
 
     private void RequestTaskView(string machineName)
@@ -570,8 +570,8 @@ public partial class MainWindow : Window
         }
         else
         {
-            AppLogger.Log($"Task View requested for {machineName} — sending TASK_VIEW message.");
-            _ = _networkManager?.SendToPeerAsync(machineName, new NetworkMessage { Type = "TASK_VIEW" });
+            AppLogger.Log($"Task View requested for {machineName} — sending {MessageTypes.TaskView} message.");
+            _ = _networkManager?.SendToPeerAsync(machineName, new NetworkMessage { Type = MessageTypes.TaskView });
         }
     }
 
@@ -588,7 +588,7 @@ public partial class MainWindow : Window
             AppLogger.Log($"Requesting desktop {desktopIndex} switch on {machineName}.");
             _ = _networkManager?.SendToPeerAsync(machineName, new NetworkMessage
             {
-                Type           = "SWITCH_TO_DESKTOP_INDEX",
+                Type           = MessageTypes.SwitchToDesktop,
                 CurrentDesktop = desktopIndex
             });
         }
@@ -686,7 +686,7 @@ public partial class MainWindow : Window
             var apiDesktops = VirtualDesktopProvider.GetAllDesktops();
             var msg = new NetworkMessage
             {
-                Type                = "STATE_UPDATE",
+                Type                = MessageTypes.StateUpdate,
                 MachineName         = _networkManager.LocalMachineName,
                 CurrentDesktop      = VirtualDesktopHelper.GetCurrentDesktopIndex(),
                 TotalDesktops       = VirtualDesktopHelper.GetTotalDesktopCount(),

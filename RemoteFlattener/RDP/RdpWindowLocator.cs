@@ -58,15 +58,12 @@ public static class RdpWindowLocator
             var title = titleBuf.ToString();
             if (string.IsNullOrEmpty(title)) return true;
 
-            foreach (var name in names)
+            var matchedName = MatchMachineName(title, names);
+            if (matchedName != null)
             {
-                if (title.Contains(name, StringComparison.OrdinalIgnoreCase))
-                {
-                    var idx = VirtualDesktopProvider.GetDesktopIndexForHwnd(hwnd);
-                    if (idx > 0)
-                        result[name] = idx;
-                    break;
-                }
+                var idx = VirtualDesktopProvider.GetDesktopIndexForHwnd(hwnd);
+                if (idx > 0)
+                    result[matchedName] = idx;
             }
             return true;
         }, IntPtr.Zero);
@@ -84,5 +81,24 @@ public static class RdpWindowLocator
             finally { p.Dispose(); }
         }
         return set;
+    }
+
+    /// <summary>
+    /// Returns the first name from <paramref name="names"/> found (case-insensitive) inside
+    /// <paramref name="windowTitle"/>, or <see langword="null"/> if none match.
+    /// The name must be followed by " - " (the standard mstsc title separator) to avoid
+    /// false-positive substring matches (e.g. "PC" matching a "MY-PC" window).
+    /// Extracted for unit testing without a real window enumeration.
+    /// </summary>
+    internal static string? MatchMachineName(string windowTitle, IEnumerable<string> names)
+    {
+        foreach (var name in names)
+        {
+            // mstsc titles are "MACHINENAME - Remote Desktop Connection".
+            // Use StartsWith (not Contains) so "PC" does not match "MY-PC - ..."
+            if (windowTitle.StartsWith(name + " - ", StringComparison.OrdinalIgnoreCase))
+                return name;
+        }
+        return null;
     }
 }

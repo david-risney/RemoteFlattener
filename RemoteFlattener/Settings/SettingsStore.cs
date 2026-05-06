@@ -13,10 +13,7 @@ namespace RemoteFlattener.Settings;
 /// </summary>
 public static class SettingsStore
 {
-    private static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RemoteFlattener",
-        "settings.json");
+    private static readonly string SettingsPath = Path.Combine(AppPaths.DataDirectory, "settings.json");
 
     public sealed class AppSettings
     {

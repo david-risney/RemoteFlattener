@@ -2,10 +2,27 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using RemoteFlattener.Interop;
 using RemoteFlattener.Logging;
 using RemoteFlattener.VirtualDesktop;
+using static RemoteFlattener.Interop.Win32Input;
 
 namespace RemoteFlattener.Hotkeys;
+
+/// <summary>The action the keyboard hook callback should take for a given key event.</summary>
+internal enum HotkeyAction
+{
+    /// <summary>Pass this event to the next hook — take no special action.</summary>
+    PassThrough,
+    /// <summary>Eat Tab keyup while Win is held (prevents ghost Start-menu events).</summary>
+    EatTabUp,
+    /// <summary>Eat the event and show the virtual desktop overlay.</summary>
+    WinTab,
+    /// <summary>Pass through and schedule a desktop-edge check for left.</summary>
+    CtrlWinLeft,
+    /// <summary>Pass through and schedule a desktop-edge check for right.</summary>
+    CtrlWinRight,
+}
 
 /// <summary>
 /// Installs a WH_KEYBOARD_LL hook to monitor Ctrl+Win+Left, Ctrl+Win+Right, and Win+Tab.
@@ -14,6 +31,7 @@ namespace RemoteFlattener.Hotkeys;
 public sealed class HotkeyManager : IDisposable
 {
     private const int WH_KEYBOARD_LL = 13;
+
     private const int WM_KEYDOWN    = 0x0100;
     private const int WM_KEYUP      = 0x0101;
     private const int WM_SYSKEYDOWN = 0x0104;
@@ -55,42 +73,6 @@ public sealed class HotkeyManager : IDisposable
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
-
-    // SendInput structs — used to inject a synthetic Win keyup after we eat Win+Tab,
-    // so Windows doesn't see a lone Win press+release (which opens the Start menu).
-    private const uint INPUT_KEYBOARD   = 1;
-    private const uint KEYEVENTF_KEYUP  = 0x0002;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KEYBDINPUT
-    {
-        public ushort wVk;
-        public ushort wScan;
-        public uint   dwFlags;
-        public uint   time;
-        public IntPtr dwExtraInfo;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MOUSEINPUT
-    {
-        public int    dx, dy;
-        public uint   mouseData, dwFlags, time;
-        public IntPtr dwExtraInfo;
-    }
-    [StructLayout(LayoutKind.Explicit)]
-    private struct INPUTUNION
-    {
-        [FieldOffset(0)] public MOUSEINPUT mi;
-        [FieldOffset(0)] public KEYBDINPUT ki;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct INPUT
-    {
-        public uint      type;
-        public INPUTUNION data;
-    }
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
     private IntPtr _hookHandle;
     // Keep a strong reference so the GC doesn't collect the delegate while the hook is active.
@@ -139,51 +121,33 @@ public sealed class HotkeyManager : IDisposable
         if (nCode >= 0)
         {
             var ks = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+            bool isInjected = (ks.flags & LLKHF_INJECTED) != 0;
+            int  vk         = (int)ks.vkCode;
+            bool isDown     = wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN;
+            bool isUp       = wParam == (IntPtr)WM_KEYUP   || wParam == (IntPtr)WM_SYSKEYUP;
 
-            // Skip synthetic keystrokes injected via SendInput (e.g. our own Task View invocation).
-            if ((ks.flags & LLKHF_INJECTED) != 0)
-                return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
-
-            int vk = (int)ks.vkCode;
-            bool isDown = wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN;
-            bool isUp   = wParam == (IntPtr)WM_KEYUP   || wParam == (IntPtr)WM_SYSKEYUP;
-
-            // Block Tab keyup while Win is held (prevents ghost key events).
-            if (isUp && vk == VK_TAB && IsWinDown())
-                return new IntPtr(1);
-
-            if (isDown && IsWinDown())
+            switch (DecideAction(nCode, isInjected, vk, isDown, isUp, IsWinDown(), IsCtrlDown()))
             {
-                switch (vk)
-                {
-                    case VK_TAB:
-                        // Eat Win+Tab and show our overlay.
-                        // Problem: if we eat Tab keydown+keyup but pass the real Win keyup
-                        // through, Windows sees Win-down then Win-up with nothing else in
-                        // between and opens the Start menu.
-                        // Fix: inject a decoy Shift keydown+keyup (flagged INJECTED so our
-                        // own hook skips it).  This "contaminates" the Win key sequence —
-                        // Windows sees another key between Win-down and Win-up and suppresses
-                        // the Start menu.  The real Win keyup still flows through normally so
-                        // Win is never stuck down.
-                        AppLogger.Log("Hotkey: Win+Tab → toggling overlay.");
-                        InjectDecoyKey();
-                        WinTabPressed?.Invoke();
-                        return new IntPtr(1);
+                case HotkeyAction.EatTabUp:
+                    return new IntPtr(1);
 
-                    case VK_LEFT:
-                        // Let the key pass; after 300ms check if desktop changed.
-                        if (!IsCtrlDown()) break;
-                        AppLogger.Log("Hotkey: Ctrl+Win+Left detected — scheduling edge check.");
-                        ScheduleEdgeCheck(left: true);
-                        break;
+                case HotkeyAction.WinTab:
+                    // Eat Win+Tab and show our overlay.  Inject a decoy key first so Windows
+                    // doesn't treat the subsequent Win keyup as a Start menu shortcut.
+                    AppLogger.Log("Hotkey: Win+Tab → toggling overlay.");
+                    InjectDecoyKey();
+                    WinTabPressed?.Invoke();
+                    return new IntPtr(1);
 
-                    case VK_RIGHT:
-                        if (!IsCtrlDown()) break;
-                        AppLogger.Log("Hotkey: Ctrl+Win+Right detected — scheduling edge check.");
-                        ScheduleEdgeCheck(left: false);
-                        break;
-                }
+                case HotkeyAction.CtrlWinLeft:
+                    AppLogger.Log("Hotkey: Ctrl+Win+Left detected — scheduling edge check.");
+                    ScheduleEdgeCheck(left: true);
+                    break;
+
+                case HotkeyAction.CtrlWinRight:
+                    AppLogger.Log("Hotkey: Ctrl+Win+Right detected — scheduling edge check.");
+                    ScheduleEdgeCheck(left: false);
+                    break;
             }
         }
         return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
@@ -192,22 +156,51 @@ public sealed class HotkeyManager : IDisposable
     private void ScheduleEdgeCheck(bool left)
     {
         var desktopBefore = VirtualDesktopHelper.GetCurrentDesktopGuid();
-        Task.Delay(300).ContinueWith(_ =>
+        Task.Delay(300).ContinueWith(
+            _ => HandleEdgeCheck(left, desktopBefore, VirtualDesktopHelper.GetCurrentDesktopGuid()),
+            TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Pure decision function for the keyboard hook callback.  Returns what action to take
+    /// given the current key event and modifier state.  Extracted for unit testing.
+    /// </summary>
+    internal static HotkeyAction DecideAction(
+        int nCode, bool isInjected, int vkCode, bool isDown, bool isUp,
+        bool isWinDown, bool isCtrlDown)
+    {
+        if (nCode < 0 || isInjected) return HotkeyAction.PassThrough;
+
+        // Block Tab keyup while Win is held (prevents ghost key events).
+        if (isUp && vkCode == VK_TAB && isWinDown) return HotkeyAction.EatTabUp;
+
+        if (isDown && isWinDown)
         {
-            var desktopAfter = VirtualDesktopHelper.GetCurrentDesktopGuid();
-            if (desktopAfter == desktopBefore)
-            {
-                AppLogger.Log($"Hotkey: Ctrl+Win+{(left ? "Left" : "Right")} at desktop edge — broadcasting switch to peers.");
-                if (left)
-                    SwitchDesktopLeft?.Invoke();
-                else
-                    SwitchDesktopRight?.Invoke();
-            }
-            else
-            {
-                AppLogger.Log($"Hotkey: Ctrl+Win+{(left ? "Left" : "Right")} — desktop changed locally, no broadcast needed.");
-            }
-        }, TaskScheduler.Default);
+            if (vkCode == VK_TAB)                           return HotkeyAction.WinTab;
+            if (vkCode == VK_LEFT  && isCtrlDown)           return HotkeyAction.CtrlWinLeft;
+            if (vkCode == VK_RIGHT && isCtrlDown)           return HotkeyAction.CtrlWinRight;
+        }
+
+        return HotkeyAction.PassThrough;
+    }
+
+    /// <summary>
+    /// Processes the result of the 300ms edge check: fires the appropriate event when
+    /// the desktop GUID has not changed (the user was at the leftmost/rightmost edge).
+    /// Extracted for unit testing without a real timer or VirtualDesktop API.
+    /// </summary>
+    internal void HandleEdgeCheck(bool left, Guid before, Guid after)
+    {
+        if (after == before)
+        {
+            AppLogger.Log($"Hotkey: Ctrl+Win+{(left ? "Left" : "Right")} at desktop edge \u2014 broadcasting switch to peers.");
+            if (left) SwitchDesktopLeft?.Invoke();
+            else      SwitchDesktopRight?.Invoke();
+        }
+        else
+        {
+            AppLogger.Log($"Hotkey: Ctrl+Win+{(left ? "Left" : "Right")} \u2014 desktop changed locally, no broadcast needed.");
+        }
     }
 
     /// <summary>

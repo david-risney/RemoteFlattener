@@ -3,6 +3,7 @@ using System.IO;
 
 namespace RemoteFlattener.Logging;
 
+
 /// <summary>
 /// Simple thread-safe logger.  Writes timestamped lines to a per-session log file under
 /// %LOCALAPPDATA%\RemoteFlattener\ and raises <see cref="LogWritten"/> so the UI can
@@ -29,8 +30,8 @@ public static class AppLogger
             EnsureWriter();
             try
             {
-                _writer!.WriteLine(line);
-                _writer.Flush();
+                _writer?.WriteLine(line);
+                _writer?.Flush();
             }
             catch { /* don't let logging break the app */ }
         }
@@ -47,13 +48,10 @@ public static class AppLogger
 
         try
         {
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "RemoteFlattener");
-            Directory.CreateDirectory(dir);
+            Directory.CreateDirectory(AppPaths.DataDirectory);
 
             var filename = $"RemoteFlattener_{DateTime.Now:yyyyMMdd_HHmmss}.log";
-            LogFilePath = Path.Combine(dir, filename);
+            LogFilePath = Path.Combine(AppPaths.DataDirectory, filename);
             _writer = new StreamWriter(LogFilePath, append: false, System.Text.Encoding.UTF8)
             {
                 AutoFlush = false

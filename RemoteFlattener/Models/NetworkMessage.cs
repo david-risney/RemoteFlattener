@@ -62,6 +62,9 @@ public class NetworkMessage
     /// <summary>Serializes this message to a newline-terminated JSON string.</summary>
     public string Serialize() => JsonSerializer.Serialize(this) + "\n";
 
-    public static NetworkMessage? Deserialize(string json) =>
-        JsonSerializer.Deserialize<NetworkMessage>(json);
+    public static NetworkMessage? Deserialize(string json)
+    {
+        try { return JsonSerializer.Deserialize<NetworkMessage>(json); }
+        catch { return null; }
+    }
 }

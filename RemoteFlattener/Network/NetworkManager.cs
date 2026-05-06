@@ -48,6 +48,17 @@ public sealed class NetworkManager : IDisposable
 
     private string _password = string.Empty;
     private List<string> _peerMachines = new();
+
+    /// <summary>For testing: the filtered, deduplicated peer list built by Start().</summary>
+    internal IReadOnlyList<string> PeerMachines => _peerMachines;
+
+    /// <summary>
+    /// For unit testing only: creates an instance with a preset password
+    /// without starting the TCP listener or outgoing connectors.
+    /// </summary>
+    internal NetworkManager(string password) { _password = password; }
+
+    public NetworkManager() { }
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
     private readonly ConcurrentDictionary<string, PeerConnection> _connections = new(StringComparer.OrdinalIgnoreCase);
@@ -75,13 +86,8 @@ public sealed class NetworkManager : IDisposable
 
     public void Start(string password, IEnumerable<string> peerMachines)
     {
-        _password = password;
-        _peerMachines = peerMachines
-            .Select(m => m.Trim())
-            .Where(m => !string.IsNullOrEmpty(m) &&
-                        !m.Equals(LocalMachineName, StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        _password    = password;
+        _peerMachines = FilterPeerMachines(peerMachines, LocalMachineName);
 
         AppLogger.Log($"NetworkManager starting.  Listening on port {Port}.  Outgoing peers: [{string.Join(", ", _peerMachines)}]");
         _cts = new CancellationTokenSource();
@@ -89,6 +95,18 @@ public sealed class NetworkManager : IDisposable
         foreach (var machine in _peerMachines)
             _ = Task.Run(() => OutgoingLoopAsync(machine, _cts.Token));
     }
+
+    /// <summary>
+    /// Filters, trims, deduplicates, and removes self from a raw peer list.
+    /// Extracted so it can be unit-tested without starting a TCP listener.
+    /// </summary>
+    internal static List<string> FilterPeerMachines(IEnumerable<string> peerMachines, string localMachineName) =>
+        peerMachines
+            .Select(m => m.Trim())
+            .Where(m => !string.IsNullOrEmpty(m) &&
+                        !m.Equals(localMachineName, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     public void Stop()
     {
@@ -190,7 +208,9 @@ public sealed class NetworkManager : IDisposable
         while (!ct.IsCancellationRequested)
         {
             // Skip if already connected (may have been initiated by the remote side first).
-            if (_connections.ContainsKey(machine))
+            // Normalize the machine name so that FQDNs (e.g. "server.corp.com") match the
+            // short name ("SERVER") stored in _connections after handshake normalization.
+            if (_connections.ContainsKey(MachineInfo.NormalizeHostname(machine)))
             {
                 await DelayOrCancel(5_000, ct);
                 continue;
@@ -238,12 +258,12 @@ public sealed class NetworkManager : IDisposable
                 if (ackLine == null) { AppLogger.Log($"Outgoing [{remoteMachineHint}]: connection closed before HELLO_ACK."); return; }
                 var ack = NetworkMessage.Deserialize(ackLine);
                 // Verify server also knows the password via its HMAC.
-                if (ack?.Type != "HELLO_ACK" ||
+                if (ack?.Type != MessageTypes.HelloAck ||
                     string.IsNullOrEmpty(ack.MachineName) ||
                     string.IsNullOrEmpty(ack.Hmac) ||
                     !VerifyHmac(ack.MachineName, ack.Hmac))
                 {
-                    AppLogger.Log($"Outgoing [{remoteMachineHint}]: authentication failed (bad HELLO_ACK).");
+                    AppLogger.Log($"Outgoing [{remoteMachineHint}]: authentication failed (bad {MessageTypes.HelloAck}).");
                     return;
                 }
                 if (ack.ProtocolVersion != ProtocolVersion)
@@ -260,7 +280,7 @@ public sealed class NetworkManager : IDisposable
                 var helloLine = await reader.ReadLineAsync(ct);
                 if (helloLine == null) { AppLogger.Log("Incoming: connection closed before HELLO."); return; }
                 var hello = NetworkMessage.Deserialize(helloLine);
-                if (hello?.Type != "HELLO" ||
+                if (hello?.Type != MessageTypes.Hello ||
                     string.IsNullOrEmpty(hello.MachineName) ||
                     string.IsNullOrEmpty(hello.Hmac) ||
                     !VerifyHmac(hello.MachineName, hello.Hmac))
@@ -276,7 +296,7 @@ public sealed class NetworkManager : IDisposable
 
                 remoteMachine = MachineInfo.NormalizeHostname(hello.MachineName);
                 var ack = BuildHello();
-                ack.Type = "HELLO_ACK";
+                ack.Type = MessageTypes.HelloAck;
                 await writer.WriteAsync(ack.Serialize());
                 await writer.FlushAsync();
             }
@@ -360,7 +380,7 @@ public sealed class NetworkManager : IDisposable
     /// Stamps OriginMachine and a fresh MessageId on the message if not already set.
     /// Call this before sending any locally-originated message.
     /// </summary>
-    private void PrepareForSend(NetworkMessage message)
+    internal void PrepareForSend(NetworkMessage message)
     {
         message.OriginMachine ??= LocalMachineName;
         message.MessageId     ??= Guid.NewGuid().ToString("N");
@@ -370,7 +390,7 @@ public sealed class NetworkManager : IDisposable
     /// Adds the ID to the seen set.  Returns true if it was new (should be processed/relayed),
     /// false if it was already known (duplicate — drop).
     /// </summary>
-    private bool MarkSeen(string id)
+    internal bool MarkSeen(string id)
     {
         lock (_seenLock)
         {
@@ -386,14 +406,14 @@ public sealed class NetworkManager : IDisposable
     {
         return new NetworkMessage
         {
-            Type            = "HELLO",
+            Type            = MessageTypes.Hello,
             MachineName     = LocalMachineName,
             Hmac            = ComputeHmac(LocalMachineName),
             ProtocolVersion = ProtocolVersion
         };
     }
 
-    private string ComputeHmac(string machineName)
+    internal string ComputeHmac(string machineName)
     {
         var key  = Encoding.UTF8.GetBytes(_password);
         var data = Encoding.UTF8.GetBytes(machineName + AppSalt);
@@ -401,7 +421,7 @@ public sealed class NetworkManager : IDisposable
         return Convert.ToHexString(hmac.ComputeHash(data));
     }
 
-    private bool VerifyHmac(string machineName, string provided)
+    internal bool VerifyHmac(string machineName, string provided)
     {
         var expected = ComputeHmac(machineName);
         return string.Equals(expected, provided, StringComparison.OrdinalIgnoreCase);
