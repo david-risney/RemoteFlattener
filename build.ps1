@@ -65,6 +65,18 @@ function Stop-RemoteFlattener {
     }
 }
 
+function Start-RemoteFlattenerIfNotRunning {
+    if (-not (Test-Path $pubExe)) {
+        Write-Warning "Published exe not found at '$pubExe' – skipping launch."
+        return
+    }
+    $running = Get-Process -Name 'RemoteFlattener' -ErrorAction SilentlyContinue
+    if (-not $running) {
+        Start-Process $pubExe
+        Write-Host "  Started RemoteFlattener." -ForegroundColor Green
+    }
+}
+
 function Start-RemoteFlattener {
     if (-not (Test-Path $pubExe)) {
         Write-Warning "Published exe not found at '$pubExe' – skipping launch."
@@ -121,12 +133,13 @@ switch ($Task) {
                         Write-Host "  Publishing..." -ForegroundColor Cyan
                         Stop-RemoteFlattener
                         Invoke-Publish
-                        Start-RemoteFlattener
+                        Start-RemoteFlattenerIfNotRunning
                         Write-Host "  Done." -ForegroundColor Green
                     }
                 }
                 else {
                     Write-Host "  Up to date." -ForegroundColor DarkGray
+                    Start-RemoteFlattenerIfNotRunning
                 }
 
                 Start-Sleep -Seconds $PollSeconds
