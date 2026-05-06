@@ -89,7 +89,7 @@ public sealed class NetworkManager : IDisposable
         _password    = password;
         _peerMachines = FilterPeerMachines(peerMachines, LocalMachineName);
 
-        AppLogger.Log($"NetworkManager starting.  Listening on port {Port}.  Outgoing peers: [{string.Join(", ", _peerMachines)}]");
+        AppLogger.Log($"NetworkManager starting.  Local node: {LocalMachineName}.  Listening on port {Port}.  Outgoing peers: [{string.Join(", ", _peerMachines)}]");
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => ListenLoopAsync(_cts.Token));
         foreach (var machine in _peerMachines)
@@ -201,34 +201,62 @@ public sealed class NetworkManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Starts an outgoing connection loop to a dynamically discovered peer (e.g. from RDP
+    /// auto-detection).  Unlike <see cref="Start"/>, this can be called after the network
+    /// is already running and uses the raw <paramref name="connectionAddress"/> (typically
+    /// an IP) for TCP so that cross-domain short-name DNS failures are avoided.
+    /// No-ops if the peer is already covered by the static peer list or already connected.
+    /// </summary>
+    public void ConnectToPeer(string machineName, string connectionAddress)
+    {
+        if (_cts == null) return; // network not started
+        var normalizedName = MachineInfo.NormalizeHostname(machineName);
+        // Static peer list already has a loop for this machine — don't duplicate.
+        if (_peerMachines.Any(p => p.Equals(normalizedName, StringComparison.OrdinalIgnoreCase)))
+            return;
+        if (_connections.ContainsKey(normalizedName)) return;
+        AppLogger.Log($"ConnectToPeer: starting connector for {machineName} via {connectionAddress}.");
+        _ = Task.Run(() => OutgoingLoopAsync(machineName, connectionAddress, _cts.Token));
+    }
+
     // ── Outgoing connector (with reconnect) ──────────────────────────────────
 
     private async Task OutgoingLoopAsync(string machine, CancellationToken ct)
+        => await OutgoingLoopAsync(machine, machine, ct);
+
+    private async Task OutgoingLoopAsync(string machineName, string connectionAddress, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             // Skip if already connected (may have been initiated by the remote side first).
             // Normalize the machine name so that FQDNs (e.g. "server.corp.com") match the
             // short name ("SERVER") stored in _connections after handshake normalization.
-            if (_connections.ContainsKey(MachineInfo.NormalizeHostname(machine)))
+            if (_connections.ContainsKey(MachineInfo.NormalizeHostname(machineName)))
             {
                 await DelayOrCancel(5_000, ct);
                 continue;
             }
 
-            AppLogger.Log($"Outgoing: attempting connection to {machine}:{Port}...");
+            // Log differently when connecting via a separate address (e.g. IP for auto-detected peers).
+            bool viaIp = !connectionAddress.Equals(machineName, StringComparison.OrdinalIgnoreCase);
+            string displayTarget = viaIp
+                ? $"{machineName} via {connectionAddress}:{Port}"
+                : $"{machineName}:{Port}";
+
+            AppLogger.Log($"Outgoing: attempting connection to {displayTarget}...");
             try
             {
                 var client = new TcpClient();
-                await client.ConnectAsync(machine, Port, ct);
-                AppLogger.Log($"Outgoing: TCP connected to {machine}:{Port}.  Starting handshake.");
+                await client.ConnectAsync(connectionAddress, Port, ct);
+                AppLogger.Log($"Outgoing: TCP connected to {displayTarget}.  Starting handshake.");
                 // HandleConnectionAsync will register in _connections; when it exits, loop retries.
-                await HandleConnectionAsync(client, outgoing: true, remoteMachineHint: machine, ct);
+                await HandleConnectionAsync(client, outgoing: true, remoteMachineHint: machineName, ct);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)
             {
-                AppLogger.Log($"Outgoing: failed to connect to {machine}: {ex.Message}. Retrying in 5 s.");
+                AppLogger.Log($"Outgoing: failed to connect to {displayTarget}: {ex.Message}. Retrying in 5 s.");
             }
 
             await DelayOrCancel(5_000, ct);

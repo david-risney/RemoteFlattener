@@ -152,7 +152,7 @@ public partial class MainWindow : Window
     private void DetectMachines_Click(object sender, RoutedEventArgs e)
     {
         AppLogger.Log("Detecting RDP peers from active TCP connections on port 3389...");
-        var peers = RdpConnectionDetector.GetRdpPeerHostnames();
+        var peers = RdpConnectionDetector.GetRdpPeers();
         if (peers.Count == 0)
         {
             AppLogger.Log("Detect: no active RDP connections found.");
@@ -163,10 +163,13 @@ public partial class MainWindow : Window
         int added = 0;
         foreach (var peer in peers)
         {
-            if (!Connections.Any(m => m.MachineName.Equals(peer, StringComparison.OrdinalIgnoreCase)))
+            if (!Connections.Any(m => m.MachineName.Equals(peer.MachineName, StringComparison.OrdinalIgnoreCase)))
             {
-                Connections.Add(new MachineInfo { MachineName = peer });
+                Connections.Add(new MachineInfo { MachineName = peer.MachineName });
                 added++;
+                // Start a connector immediately using the known-good IP address so that
+                // cross-domain short-name DNS failures don't prevent the connection.
+                _networkManager?.ConnectToPeer(peer.MachineName, peer.ConnectionAddress);
             }
         }
 
@@ -197,7 +200,8 @@ public partial class MainWindow : Window
     {
         var name = AddPeerBox.Text?.Trim() ?? string.Empty;
         if (string.IsNullOrEmpty(name)) return;
-        if (!Connections.Any(m => m.MachineName.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        if (!Connections.Any(m => MachineInfo.NormalizeHostname(m.MachineName)
+                .Equals(MachineInfo.NormalizeHostname(name), StringComparison.OrdinalIgnoreCase)))
         {
             Connections.Add(new MachineInfo { MachineName = name });
             SaveSettings();
@@ -507,8 +511,9 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            var normalized = MachineInfo.NormalizeHostname(machineName);
             var info = Connections.FirstOrDefault(m =>
-                m.MachineName.Equals(machineName, StringComparison.OrdinalIgnoreCase));
+                MachineInfo.NormalizeHostname(m.MachineName).Equals(normalized, StringComparison.OrdinalIgnoreCase));
             if (info != null)
                 info.IsConnected = false;
             RefreshStatusLabel();
@@ -665,10 +670,10 @@ public partial class MainWindow : Window
     {
         var normalized = MachineInfo.NormalizeHostname(machineName);
         var info = Connections.FirstOrDefault(m =>
-            m.MachineName.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            MachineInfo.NormalizeHostname(m.MachineName).Equals(normalized, StringComparison.OrdinalIgnoreCase));
         if (info == null)
         {
-            info = new MachineInfo { MachineName = normalized };
+            info = new MachineInfo { MachineName = machineName };
             Connections.Add(info);
         }
         return info;

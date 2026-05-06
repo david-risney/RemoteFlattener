@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using RemoteFlattener.Models;
 using RemoteFlattener.VirtualDesktop;
 
 namespace RemoteFlattener.RDP;
@@ -84,19 +85,26 @@ public static class RdpWindowLocator
     }
 
     /// <summary>
-    /// Returns the first name from <paramref name="names"/> found (case-insensitive) inside
-    /// <paramref name="windowTitle"/>, or <see langword="null"/> if none match.
-    /// The name must be followed by " - " (the standard mstsc title separator) to avoid
-    /// false-positive substring matches (e.g. "PC" matching a "MY-PC" window).
+    /// Returns the first name from <paramref name="names"/> whose short hostname
+    /// (first DNS label) matches the hostname portion of <paramref name="windowTitle"/>,
+    /// or <see langword="null"/> if none match.
+    /// mstsc window titles are "HOSTNAME - Remote Desktop Connection", where HOSTNAME
+    /// may be a short name, FQDN, or IP address.  Both sides are normalized to their
+    /// first DNS label before comparison so that "davris-0.corp.com" matches "DAVRIS-0".
     /// Extracted for unit testing without a real window enumeration.
     /// </summary>
     internal static string? MatchMachineName(string windowTitle, IEnumerable<string> names)
     {
+        // Extract the hostname portion: everything before the first " - " separator.
+        const string sep = " - ";
+        var sepIdx = windowTitle.IndexOf(sep, StringComparison.Ordinal);
+        if (sepIdx <= 0) return null;
+        var titleHost = MachineInfo.NormalizeHostname(windowTitle[..sepIdx]);
+        if (string.IsNullOrEmpty(titleHost)) return null;
+
         foreach (var name in names)
         {
-            // mstsc titles are "MACHINENAME - Remote Desktop Connection".
-            // Use StartsWith (not Contains) so "PC" does not match "MY-PC - ..."
-            if (windowTitle.StartsWith(name + " - ", StringComparison.OrdinalIgnoreCase))
+            if (MachineInfo.NormalizeHostname(name).Equals(titleHost, StringComparison.OrdinalIgnoreCase))
                 return name;
         }
         return null;

@@ -158,7 +158,9 @@ public partial class TreeWindow : Window
         };
 
         var all = new List<MachineInfo> { localMachineInfo };
-        all.AddRange(_peers);
+        // Only include peers that are reachable: directly connected, known via the mesh,
+        // or RDP servers (which are reached through a client, not directly).
+        all.AddRange(_peers.Where(p => p.IsConnected || p.IsIndirect || p.IsRdpServer));
 
         var localApiDesktops = VirtualDesktopProvider.GetAllDesktops();
         _localApiDesktops    = localApiDesktops;   // cache for GetDesktopRowsFor()
@@ -171,7 +173,8 @@ public partial class TreeWindow : Window
         Dictionary<string, int> localRdpMap;
         if (!_localIsRdpServer)
         {
-            localRdpMap = RdpWindowLocator.GetRdpDesktopMap(allMachineNames);
+            localRdpMap = RdpWindowLocator.GetRdpDesktopMap(
+                allMachineNames.Select(MachineInfo.NormalizeHostname).ToList());
             localMachineInfo.RdpHostedServers = new Dictionary<string, int>(
                 localRdpMap.ToDictionary(
                     kv => MachineInfo.NormalizeHostname(kv.Key),
@@ -471,12 +474,14 @@ public partial class TreeWindow : Window
         if (desktops.Length == 0) return;
 
         // Group remote servers by desktop index from the broadcast map.
+        // hostedMap keys are always normalized short names; s.MachineName may be a FQDN,
+        // so normalize before lookup.
         var hostedMap = client.RdpHostedServers;
         var serversByDesktop = all
             .Where(m => m.IsRdpServer &&
                         !m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase))
-            .Where(s => hostedMap.ContainsKey(s.MachineName))
-            .GroupBy(s => hostedMap[s.MachineName])
+            .Where(s => hostedMap.ContainsKey(MachineInfo.NormalizeHostname(s.MachineName)))
+            .GroupBy(s => hostedMap[MachineInfo.NormalizeHostname(s.MachineName)])
             .ToDictionary(g => g.Key, g => g.ToList());
 
         // If we're the server, find which desktop index we belong to.
@@ -600,7 +605,9 @@ public partial class TreeWindow : Window
         switchBtn.MouseDown += (_, e) => e.Handled = true;
         switchBtn.Click     += (_, _) =>
         {
-            if (!isLocal && _rdpDesktopMap.TryGetValue(machineName, out var localIdx))
+            // If this desktop belongs to a remote server, also switch the local machine
+            // to whichever desktop hosts that server's mstsc window.
+            if (!isLocal && _rdpDesktopMap.TryGetValue(MachineInfo.NormalizeHostname(machineName), out var localIdx))
                 _onSwitchToDesktop(_localMachineName, localIdx);
             _onSwitchToDesktop(machineName, desktopIndex);
         };

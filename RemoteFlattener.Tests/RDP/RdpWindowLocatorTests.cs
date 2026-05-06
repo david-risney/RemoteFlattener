@@ -1,3 +1,4 @@
+using RemoteFlattener.Models;
 using RemoteFlattener.RDP;
 using Xunit;
 
@@ -86,13 +87,12 @@ public class RdpWindowLocatorTests
         Assert.Equal("MACHINE-B", result);
     }
 
-    // ── Substring false-positive prevention ────────────────────────────────
+    // ── False-positive prevention ────────────────────────────────────────
 
     [Fact]
     public void MatchMachineName_ShortNameIsSubstringOfLongerName_DoesNotFalsePositive()
     {
-        // "PC" must NOT match "MY-PC - Remote Desktop Connection".
-        // The title must START WITH the name, so "PC" (which only appears mid-string) is skipped.
+        // "PC" normalizes to "PC"; title hostname "MY-PC" normalizes to "MY-PC" — no match.
         var result = RdpWindowLocator.MatchMachineName(
             "MY-PC - Remote Desktop Connection", ["PC", "MY-PC"]);
         Assert.Equal("MY-PC", result);
@@ -101,7 +101,7 @@ public class RdpWindowLocatorTests
     [Fact]
     public void MatchMachineName_NameNotAtStart_DoesNotMatch()
     {
-        // Even with the separator, the name must be at the start of the title.
+        // Prefix before " - " would be "PREFIX MY-SERVER" which normalizes to "PREFIX" — no match.
         var result = RdpWindowLocator.MatchMachineName(
             "PREFIX MY-SERVER - Remote Desktop Connection", ["MY-SERVER"]);
         Assert.Null(result);
@@ -113,5 +113,46 @@ public class RdpWindowLocatorTests
         var result = RdpWindowLocator.MatchMachineName(
             "MY-SERVER - Remote Desktop Connection", ["MY-SERVER"]);
         Assert.Equal("MY-SERVER", result);
+    }
+
+    // ── FQDN window titles ────────────────────────────────────────────────
+
+    [Fact]
+    public void MatchMachineName_FqdnWindowTitle_MatchesShortName()
+    {
+        // mstsc connected via FQDN → title is "davris-0.guest.corp.microsoft.com - Remote Desktop Connection"
+        // Candidate name is the short name "DAVRIS-0" (from ConnectedPeers).
+        var result = RdpWindowLocator.MatchMachineName(
+            "davris-0.guest.corp.microsoft.com - Remote Desktop Connection", ["DAVRIS-0"]);
+        Assert.Equal("DAVRIS-0", result);
+    }
+
+    [Fact]
+    public void MatchMachineName_FqdnWindowTitle_MatchesFqdnCandidate()
+    {
+        // Candidate is itself a FQDN — both sides normalize to the same short name.
+        var result = RdpWindowLocator.MatchMachineName(
+            "davris-0.guest.corp.microsoft.com - Remote Desktop Connection",
+            ["davris-0.guest.corp.microsoft.com"]);
+        Assert.Equal("davris-0.guest.corp.microsoft.com", result);
+    }
+
+    [Fact]
+    public void MatchMachineName_ShortTitleVsFqdnCandidate_Matches()
+    {
+        // mstsc used short name in title, but candidate is FQDN — first label matches.
+        var result = RdpWindowLocator.MatchMachineName(
+            "DAVRIS-0 - Remote Desktop Connection",
+            ["davris-0.guest.corp.microsoft.com"]);
+        Assert.Equal("davris-0.guest.corp.microsoft.com", result);
+    }
+
+    [Fact]
+    public void MatchMachineName_NoSeparatorInTitle_ReturnsNull()
+    {
+        // Titles without " - " should not match anything.
+        var result = RdpWindowLocator.MatchMachineName(
+            "DAVRIS-0", ["DAVRIS-0"]);
+        Assert.Null(result);
     }
 }
