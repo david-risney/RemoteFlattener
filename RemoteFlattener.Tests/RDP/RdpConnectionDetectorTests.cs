@@ -160,4 +160,60 @@ public class RdpConnectionDetectorTests
             [Ip1], "SELF", _ => "server-01.corp.example.com");
         Assert.Contains("SERVER-01", result);
     }
+
+    // ── ResolveToRdpPeers ─────────────────────────────────────────────────
+
+    [Fact]
+    public void ResolveToRdpPeers_NormalAddress_HasHostnameAndIp()
+    {
+        var result = RdpConnectionDetector.ResolveToRdpPeers(
+            [Ip1], "SELF", _ => "server.corp.com");
+        var peer = Assert.Single(result);
+        Assert.Equal("SERVER", peer.MachineName);
+        Assert.Equal("10.0.0.1", peer.ConnectionAddress);
+    }
+
+    [Fact]
+    public void ResolveToRdpPeers_LoopbackAddress_IsSkipped()
+    {
+        var result = RdpConnectionDetector.ResolveToRdpPeers(
+            [LoopV4], "SELF", _ => "localhost");
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void ResolveToRdpPeers_SelfAddress_IsFiltered()
+    {
+        var result = RdpConnectionDetector.ResolveToRdpPeers(
+            [Ip1], "MY-PC", _ => "MY-PC.corp.com");
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void ResolveToRdpPeers_DnsThrows_FallsBackToIpForBothFields()
+    {
+        var result = RdpConnectionDetector.ResolveToRdpPeers(
+            [Ip1], "SELF", _ => throw new System.Net.Sockets.SocketException());
+        var peer = Assert.Single(result);
+        Assert.Equal("10.0.0.1", peer.MachineName);
+        Assert.Equal("10.0.0.1", peer.ConnectionAddress);
+    }
+
+    [Fact]
+    public void ResolveToRdpPeers_EmptyInput_ReturnsEmpty()
+    {
+        Assert.Empty(RdpConnectionDetector.ResolveToRdpPeers([], "SELF", _ => "host"));
+    }
+
+    [Fact]
+    public void ResolveToRdpPeers_ConnectionAddressIsAlwaysRawIp()
+    {
+        // Even when DNS returns a FQDN, the connection address must be the raw IP
+        // so it works across DNS domains where the short name may not resolve.
+        var result = RdpConnectionDetector.ResolveToRdpPeers(
+            [Ip2], "SELF", _ => "remote.guest.corp.microsoft.com");
+        var peer = Assert.Single(result);
+        Assert.Equal("REMOTE", peer.MachineName);
+        Assert.Equal("10.0.0.2", peer.ConnectionAddress);
+    }
 }
