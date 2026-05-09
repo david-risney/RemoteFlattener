@@ -440,15 +440,19 @@ public partial class TreeWindow : Window
         var desktops = GetDesktopRowsFor(client, parentIsActive);
         if (desktops.Length == 0) return;
 
-        // Group remote servers by desktop index from the broadcast map.
-        // hostedMap keys are always normalized short names; s.MachineName may be a FQDN,
-        // so normalize before lookup.
+        // Group machines-with-mstsc-windows by the local desktop index reported in the
+        // hosted map.  hostedMap keys are always normalized short names; MachineName may be
+        // a FQDN, so normalize before lookup.
+        // NOTE: we intentionally do NOT filter by IsRdpServer here — a peer can have an
+        // mstsc window pointing to it while its RemoteFlattener instance is running in the
+        // physical console session (SM_REMOTESESSION=0), causing it to self-report
+        // IsRdpServer=false even though this machine is actively connecting to it via RDP.
+        // The hostedMap itself (built from the live window scan) is the authoritative source.
         var hostedMap = client.RdpHostedServers;
         var serversByDesktop = all
-            .Where(m => m.IsRdpServer &&
-                        !m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase))
-            .Where(s => hostedMap.ContainsKey(MachineInfo.NormalizeHostname(s.MachineName)))
-            .GroupBy(s => hostedMap[MachineInfo.NormalizeHostname(s.MachineName)])
+            .Where(m => !m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase) &&
+                        hostedMap.ContainsKey(MachineInfo.NormalizeHostname(m.MachineName)))
+            .GroupBy(m => hostedMap[MachineInfo.NormalizeHostname(m.MachineName)])
             .ToDictionary(g => g.Key, g => g.ToList());
 
         // If we're the server, find which desktop index we belong to.
