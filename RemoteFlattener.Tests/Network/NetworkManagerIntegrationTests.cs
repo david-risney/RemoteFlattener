@@ -1004,4 +1004,188 @@ public class NetworkManagerIntegrationTests : IDisposable
         await WaitForAsync(() => received.Count > 0, TimeSpan.FromSeconds(5), $"{messageType} received");
         Assert.Equal(messageType, received.First().Type);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ConnectToPeer dynamic addition
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task ConnectToPeer_DynamicPeerAddedMidSession()
+    {
+        int portA = GetFreePort(), portB = GetFreePort(), portC = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        // A starts with B as a peer.
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "A-B connected");
+
+        // C starts independently — not in A's original peer list.
+        var nodeC = CreateNode("NODE-C", portC);
+        nodeC.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Dynamically add C as a peer to A.
+        nodeA.ConnectToPeer("NODE-C", "127.0.0.1", portC);
+        await WaitForAsync(() => nodeA.ConnectedPeers.Contains("NODE-C"), TimeSpan.FromSeconds(5),
+            "A dynamically connects to C");
+
+        Assert.Equal(2, nodeA.ConnectedPeers.Count());
+    }
+
+    [Fact]
+    public async Task ConnectToPeer_MessagesFlowToDynamicPeer()
+    {
+        int portA = GetFreePort(), portC = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeC = CreateNode("NODE-C", portC);
+
+        var received = new ConcurrentBag<NetworkMessage>();
+        nodeC.MessageReceived += (_, msg) => received.Add(msg);
+
+        nodeA.Start("pw", Array.Empty<(string, string, int)>());
+        nodeC.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Dynamically connect A to C.
+        nodeA.ConnectToPeer("NODE-C", "127.0.0.1", portC);
+        await WaitForAsync(() => nodeA.ConnectedPeers.Contains("NODE-C"), TimeSpan.FromSeconds(5), "connected");
+
+        await nodeA.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate, CurrentDesktop = 42 });
+        await WaitForAsync(() => received.Count > 0, TimeSpan.FromSeconds(5), "C receives message");
+        Assert.Equal(42, received.First().CurrentDesktop);
+    }
+
+    [Fact]
+    public async Task ConnectToPeer_AlreadyConnected_NoOps()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        // ConnectToPeer to already-connected peer should no-op — still just one connection.
+        nodeA.ConnectToPeer("NODE-B", "127.0.0.1", portB);
+        await Task.Delay(500);
+        Assert.Single(nodeA.ConnectedPeers);
+    }
+
+    [Fact]
+    public void ConnectToPeer_BeforeStart_NoOps()
+    {
+        int portA = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        // Don't call Start — ConnectToPeer should silently no-op.
+        nodeA.ConnectToPeer("NODE-X", "127.0.0.1", 9999);
+        Assert.Empty(nodeA.ConnectedPeers);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Network partition & heal
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task Partition_MiddleNodeDiesAndRecovers_MeshHeals()
+    {
+        // A <-> B <-> C — kill B, restart B, verify A and C reconnect through B.
+        int portA = GetFreePort(), portB = GetFreePort(), portC = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+        var nodeC = CreateNode("NODE-C", portC);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        nodeC.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+
+        await WaitForAsync(() => nodeB.ConnectedPeers.Count() >= 2, TimeSpan.FromSeconds(5), "initial mesh");
+
+        // Kill B.
+        nodeB.Stop();
+        nodeB.Dispose();
+        _nodes.Remove(nodeB);
+        await WaitForAsync(() => !nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "A detects B down");
+
+        // Restart B on the same port.
+        var nodeB2 = CreateNode("NODE-B", portB);
+        nodeB2.Start("pw", Array.Empty<(string, string, int)>());
+
+        // A and C should reconnect to B (their outgoing loops retry).
+        await WaitForAsync(
+            () => nodeB2.ConnectedPeers.Count() >= 2,
+            TimeSpan.FromSeconds(15),
+            "mesh heals — B2 has both peers");
+
+        // Verify messages flow end-to-end again.
+        var receivedByC = new ConcurrentBag<NetworkMessage>();
+        nodeC.MessageReceived += (_, msg) => receivedByC.Add(msg);
+
+        await nodeA.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate, CurrentDesktop = 77 });
+        await WaitForAsync(() => receivedByC.Count > 0, TimeSpan.FromSeconds(5), "C receives after heal");
+        Assert.Equal(77, receivedByC.First().CurrentDesktop);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Large payload
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task LargePayload_WallpaperThumbnails_SurviveTransmission()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var received = new ConcurrentBag<NetworkMessage>();
+        nodeB.MessageReceived += (_, msg) => received.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        // ~100KB of fake base64 thumbnail data per desktop.
+        var largeThumbnail = new string('A', 100_000);
+        var thumbnails = Enumerable.Range(0, 4).Select(_ => largeThumbnail).ToList();
+
+        await nodeA.BroadcastAsync(new NetworkMessage
+        {
+            Type = MessageTypes.StateUpdate,
+            WallpaperThumbnails = thumbnails,
+        });
+
+        await WaitForAsync(() => received.Count > 0, TimeSpan.FromSeconds(10), "large message received");
+        var msg = received.First();
+        Assert.Equal(4, msg.WallpaperThumbnails!.Count);
+        Assert.All(msg.WallpaperThumbnails, t => Assert.Equal(100_000, t.Length));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Rapid connect / disconnect cycles
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task RapidConnectDisconnect_NodeStaysHealthy()
+    {
+        int portA = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        nodeA.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Rapidly connect and disconnect 10 times.
+        for (int i = 0; i < 10; i++)
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            await client.ConnectAsync("127.0.0.1", portA);
+            client.Close();
+        }
+
+        await Task.Delay(500);
+
+        // Node should still be healthy — connect a real peer.
+        int portB = GetFreePort();
+        var nodeB = CreateNode("NODE-B", portB);
+        nodeB.Start("pw", new[] { ("NODE-A", "127.0.0.1", portA) });
+        await WaitForAsync(() => nodeA.ConnectedPeers.Contains("NODE-B"), TimeSpan.FromSeconds(5),
+            "A still healthy after rapid connect/disconnect");
+    }
 }

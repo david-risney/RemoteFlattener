@@ -238,7 +238,7 @@ public sealed class NetworkManager : IDisposable
     /// an IP) for TCP so that cross-domain short-name DNS failures are avoided.
     /// No-ops if the peer is already covered by the static peer list or already connected.
     /// </summary>
-    public void ConnectToPeer(string machineName, string connectionAddress)
+    public void ConnectToPeer(string machineName, string connectionAddress, int? port = null)
     {
         if (_cts == null) return; // network not started
         var normalizedName = MachineInfo.NormalizeHostname(machineName);
@@ -247,7 +247,7 @@ public sealed class NetworkManager : IDisposable
             return;
         if (_connections.ContainsKey(normalizedName)) return;
         _logger.Log($"ConnectToPeer: starting connector for {machineName} via {connectionAddress}.");
-        _ = Task.Run(() => OutgoingLoopAsync(machineName, connectionAddress, _cts.Token));
+        _ = Task.Run(() => OutgoingLoopAsync(machineName, connectionAddress, port ?? Port, _cts.Token));
     }
 
     // ── Outgoing connector (with reconnect) ──────────────────────────────────
