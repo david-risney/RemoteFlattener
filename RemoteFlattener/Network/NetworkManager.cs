@@ -9,7 +9,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using RemoteFlattener.Logging;
 using RemoteFlattener.Models;
 
 namespace RemoteFlattener.Network;
@@ -32,19 +31,21 @@ internal sealed class PeerConnection : IDisposable
 }
 
 /// <summary>
-/// Manages TCP peer-to-peer connections on port 8765.
+/// Manages TCP peer-to-peer connections.
 /// Both listens for incoming connections and initiates outgoing connections to configured peers.
 /// Authentication uses HMAC-SHA256 of (machineName + "RemoteFlattener") keyed with the shared password.
 /// </summary>
 public sealed class NetworkManager : IDisposable
 {
-    private const int Port = 8765;
     private const string AppSalt = "RemoteFlattener";
     /// <summary>
     /// Increment when making breaking changes to the wire format.
     /// Peers with a different protocol version will be rejected during handshake.
     /// </summary>
     public const int ProtocolVersion = 1;
+
+    private readonly NetworkManagerConfig _config;
+    private readonly INetworkLogger _logger;
 
     private string _password = string.Empty;
     private List<string> _peerMachines = new();
@@ -56,9 +57,21 @@ public sealed class NetworkManager : IDisposable
     /// For unit testing only: creates an instance with a preset password
     /// without starting the TCP listener or outgoing connectors.
     /// </summary>
-    internal NetworkManager(string password) { _password = password; }
+    internal NetworkManager(string password) : this(password, new NetworkManagerConfig()) { }
 
-    public NetworkManager() { }
+    internal NetworkManager(string password, NetworkManagerConfig config) : this(config)
+    {
+        _password = password;
+    }
+
+    public NetworkManager() : this(new NetworkManagerConfig()) { }
+
+    public NetworkManager(NetworkManagerConfig config)
+    {
+        _config = config;
+        _logger = config.Logger;
+    }
+
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
     private readonly ConcurrentDictionary<string, PeerConnection> _connections = new(StringComparer.OrdinalIgnoreCase);
@@ -71,7 +84,10 @@ public sealed class NetworkManager : IDisposable
     private bool _disposed;
 
     /// <summary>The machine name of this instance (used in authentication and state messages).</summary>
-    public string LocalMachineName { get; } = MachineInfo.NormalizeHostname(Environment.MachineName);
+    public string LocalMachineName => _config.LocalMachineName;
+
+    /// <summary>TCP port this node listens on and connects to.</summary>
+    public int Port => _config.Port;
 
     /// <summary>Machine names of currently authenticated, connected peers.</summary>
     public IEnumerable<string> ConnectedPeers =>
@@ -89,11 +105,25 @@ public sealed class NetworkManager : IDisposable
         _password    = password;
         _peerMachines = FilterPeerMachines(peerMachines, LocalMachineName);
 
-        AppLogger.Log($"NetworkManager starting.  Local node: {LocalMachineName}.  Listening on port {Port}.  Outgoing peers: [{string.Join(", ", _peerMachines)}]");
+        _logger.Log($"NetworkManager starting.  Local node: {LocalMachineName}.  Listening on port {Port}.  Outgoing peers: [{string.Join(", ", _peerMachines)}]");
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => ListenLoopAsync(_cts.Token));
         foreach (var machine in _peerMachines)
             _ = Task.Run(() => OutgoingLoopAsync(machine, _cts.Token));
+    }
+
+    /// <summary>
+    /// Starts this node with explicit peer endpoints.  Each tuple is (machineName, host, port).
+    /// This allows tests to run multiple nodes on localhost with different ports.
+    /// </summary>
+    internal void Start(string password, IEnumerable<(string machineName, string host, int port)> peerEndpoints)
+    {
+        _password = password;
+        _logger.Log($"NetworkManager starting.  Local node: {LocalMachineName}.  Listening on port {Port}.");
+        _cts = new CancellationTokenSource();
+        _ = Task.Run(() => ListenLoopAsync(_cts.Token));
+        foreach (var (machineName, host, port) in peerEndpoints)
+            _ = Task.Run(() => OutgoingLoopAsync(machineName, host, port, _cts.Token));
     }
 
     /// <summary>
@@ -110,7 +140,7 @@ public sealed class NetworkManager : IDisposable
 
     public void Stop()
     {
-        AppLogger.Log("NetworkManager stopping.");
+        _logger.Log("NetworkManager stopping.");
         _cts?.Cancel();
         _listener?.Stop();
         foreach (var conn in _connections.Values)
@@ -148,13 +178,13 @@ public sealed class NetworkManager : IDisposable
 
         if (_connections.TryGetValue(machineName, out var direct))
         {
-            AppLogger.Log($"Sending {message.Type} directly to {machineName}.");
+            _logger.Log($"Sending {message.Type} directly to {machineName}.");
             await SendLineAsync(direct, message.Serialize());
         }
         else
         {
             // No direct link — flood all peers; one of them will relay it.
-            AppLogger.Log($"No direct link to '{machineName}'; flooding {_connections.Count} peer(s) to relay.");
+            _logger.Log($"No direct link to '{machineName}'; flooding {_connections.Count} peer(s) to relay.");
             var json = message.Serialize();
             var tasks = _connections.Values
                 .Select(c => SendLineAsync(c, json))
@@ -183,20 +213,20 @@ public sealed class NetworkManager : IDisposable
         {
             _listener = new TcpListener(IPAddress.Any, Port);
             _listener.Start();
-            AppLogger.Log($"Listener started on port {Port}.");
+            _logger.Log($"Listener started on port {Port}.");
             while (!ct.IsCancellationRequested)
             {
                 var client = await _listener.AcceptTcpClientAsync(ct);
                 var remoteIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "unknown";
-                AppLogger.Log($"Incoming TCP connection from {remoteIp}.");
+                _logger.Log($"Incoming TCP connection from {remoteIp}.");
                 _ = Task.Run(() => HandleConnectionAsync(client, outgoing: false, remoteMachineHint: null, ct));
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { AppLogger.Log($"Listener error: {ex.Message}"); }
+        catch (Exception ex) { _logger.Log($"Listener error: {ex.Message}"); }
         finally
         {
-            AppLogger.Log("Listener stopped.");
+            _logger.Log("Listener stopped.");
             _listener?.Stop();
         }
     }
@@ -216,16 +246,19 @@ public sealed class NetworkManager : IDisposable
         if (_peerMachines.Any(p => p.Equals(normalizedName, StringComparison.OrdinalIgnoreCase)))
             return;
         if (_connections.ContainsKey(normalizedName)) return;
-        AppLogger.Log($"ConnectToPeer: starting connector for {machineName} via {connectionAddress}.");
+        _logger.Log($"ConnectToPeer: starting connector for {machineName} via {connectionAddress}.");
         _ = Task.Run(() => OutgoingLoopAsync(machineName, connectionAddress, _cts.Token));
     }
 
     // ── Outgoing connector (with reconnect) ──────────────────────────────────
 
     private async Task OutgoingLoopAsync(string machine, CancellationToken ct)
-        => await OutgoingLoopAsync(machine, machine, ct);
+        => await OutgoingLoopAsync(machine, machine, Port, ct);
 
     private async Task OutgoingLoopAsync(string machineName, string connectionAddress, CancellationToken ct)
+        => await OutgoingLoopAsync(machineName, connectionAddress, Port, ct);
+
+    private async Task OutgoingLoopAsync(string machineName, string connectionAddress, int port, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -241,22 +274,22 @@ public sealed class NetworkManager : IDisposable
             // Log differently when connecting via a separate address (e.g. IP for auto-detected peers).
             bool viaIp = !connectionAddress.Equals(machineName, StringComparison.OrdinalIgnoreCase);
             string displayTarget = viaIp
-                ? $"{machineName} via {connectionAddress}:{Port}"
-                : $"{machineName}:{Port}";
+                ? $"{machineName} via {connectionAddress}:{port}"
+                : $"{machineName}:{port}";
 
-            AppLogger.Log($"Outgoing: attempting connection to {displayTarget}...");
+            _logger.Log($"Outgoing: attempting connection to {displayTarget}...");
             try
             {
                 var client = new TcpClient();
-                await client.ConnectAsync(connectionAddress, Port, ct);
-                AppLogger.Log($"Outgoing: TCP connected to {displayTarget}.  Starting handshake.");
+                await client.ConnectAsync(connectionAddress, port, ct);
+                _logger.Log($"Outgoing: TCP connected to {displayTarget}.  Starting handshake.");
                 // HandleConnectionAsync will register in _connections; when it exits, loop retries.
                 await HandleConnectionAsync(client, outgoing: true, remoteMachineHint: machineName, ct);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)
             {
-                AppLogger.Log($"Outgoing: failed to connect to {displayTarget}: {ex.Message}. Retrying in 5 s.");
+                _logger.Log($"Outgoing: failed to connect to {displayTarget}: {ex.Message}. Retrying in 5 s.");
             }
 
             await DelayOrCancel(5_000, ct);
@@ -269,6 +302,7 @@ public sealed class NetworkManager : IDisposable
         TcpClient client, bool outgoing, string? remoteMachineHint, CancellationToken ct)
     {
         string? remoteMachine = null;
+        bool registered = false;
         var stream = client.GetStream();
         var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
         var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: false) { AutoFlush = false };
@@ -283,7 +317,7 @@ public sealed class NetworkManager : IDisposable
                 await writer.FlushAsync();
 
                 var ackLine = await reader.ReadLineAsync(ct);
-                if (ackLine == null) { AppLogger.Log($"Outgoing [{remoteMachineHint}]: connection closed before HELLO_ACK."); return; }
+                if (ackLine == null) { _logger.Log($"Outgoing [{remoteMachineHint}]: connection closed before HELLO_ACK."); return; }
                 var ack = NetworkMessage.Deserialize(ackLine);
                 // Verify server also knows the password via its HMAC.
                 if (ack?.Type != MessageTypes.HelloAck ||
@@ -291,12 +325,12 @@ public sealed class NetworkManager : IDisposable
                     string.IsNullOrEmpty(ack.Hmac) ||
                     !VerifyHmac(ack.MachineName, ack.Hmac))
                 {
-                    AppLogger.Log($"Outgoing [{remoteMachineHint}]: authentication failed (bad {MessageTypes.HelloAck}).");
+                    _logger.Log($"Outgoing [{remoteMachineHint}]: authentication failed (bad {MessageTypes.HelloAck}).");
                     return;
                 }
                 if (ack.ProtocolVersion != ProtocolVersion)
                 {
-                    AppLogger.Log($"Outgoing [{remoteMachineHint}]: incompatible protocol version (ours={ProtocolVersion}, theirs={ack.ProtocolVersion}). Update RemoteFlattener on both machines.");
+                    _logger.Log($"Outgoing [{remoteMachineHint}]: incompatible protocol version (ours={ProtocolVersion}, theirs={ack.ProtocolVersion}). Update RemoteFlattener on both machines.");
                     return;
                 }
 
@@ -306,19 +340,19 @@ public sealed class NetworkManager : IDisposable
             {
                 // Wait for HELLO then send HELLO_ACK with our own HMAC.
                 var helloLine = await reader.ReadLineAsync(ct);
-                if (helloLine == null) { AppLogger.Log("Incoming: connection closed before HELLO."); return; }
+                if (helloLine == null) { _logger.Log("Incoming: connection closed before HELLO."); return; }
                 var hello = NetworkMessage.Deserialize(helloLine);
                 if (hello?.Type != MessageTypes.Hello ||
                     string.IsNullOrEmpty(hello.MachineName) ||
                     string.IsNullOrEmpty(hello.Hmac) ||
                     !VerifyHmac(hello.MachineName, hello.Hmac))
                 {
-                    AppLogger.Log("Incoming: authentication failed (bad HELLO or wrong password).");
+                    _logger.Log("Incoming: authentication failed (bad HELLO or wrong password).");
                     return;
                 }
                 if (hello.ProtocolVersion != ProtocolVersion)
                 {
-                    AppLogger.Log($"Incoming [{hello.MachineName}]: incompatible protocol version (ours={ProtocolVersion}, theirs={hello.ProtocolVersion}). Update RemoteFlattener on both machines.");
+                    _logger.Log($"Incoming [{hello.MachineName}]: incompatible protocol version (ours={ProtocolVersion}, theirs={hello.ProtocolVersion}). Update RemoteFlattener on both machines.");
                     return;
                 }
 
@@ -333,12 +367,13 @@ public sealed class NetworkManager : IDisposable
             var conn = new PeerConnection { MachineName = remoteMachine, Client = client, Writer = writer };
             if (!_connections.TryAdd(remoteMachine, conn))
             {
-                AppLogger.Log($"Duplicate connection for {remoteMachine} — dropping.");
+                _logger.Log($"Duplicate connection for {remoteMachine} — dropping.");
                 conn.Dispose();
                 return;
             }
+            registered = true;
 
-            AppLogger.Log($"Peer {remoteMachine} authenticated and connected ({(outgoing ? "outgoing" : "incoming")}).");
+            _logger.Log($"Peer {remoteMachine} authenticated and connected ({(outgoing ? "outgoing" : "incoming")}).");
             PeerConnected?.Invoke(remoteMachine);
 
             // Read messages until the connection closes.
@@ -365,7 +400,7 @@ public sealed class NetworkManager : IDisposable
 
                 if (isForMe)
                 {
-                    AppLogger.Log($"Received {msg.Type} from {remoteMachine} (origin: {msg.OriginMachine ?? remoteMachine}).");
+                    _logger.Log($"Received {msg.Type} from {remoteMachine} (origin: {msg.OriginMachine ?? remoteMachine}).");
                     MessageReceived?.Invoke(remoteMachine, msg);
                 }
 
@@ -383,15 +418,15 @@ public sealed class NetworkManager : IDisposable
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { AppLogger.Log($"Connection error [{remoteMachine ?? remoteMachineHint ?? "unknown"}]: {ex.Message}"); }
+        catch (Exception ex) { _logger.Log($"Connection error [{remoteMachine ?? remoteMachineHint ?? "unknown"}]: {ex.Message}"); }
         finally
         {
             reader.Dispose();
-            // conn.Dispose() closes writer and client; fall back if conn was never registered.
-            if (remoteMachine != null && _connections.TryRemove(remoteMachine, out var removed))
+            // Only remove from _connections if this handler was the one that registered.
+            if (registered && remoteMachine != null && _connections.TryRemove(remoteMachine, out var removed))
             {
                 removed.Dispose();
-                AppLogger.Log($"Peer {remoteMachine} disconnected.");
+                _logger.Log($"Peer {remoteMachine} disconnected.");
                 PeerDisconnected?.Invoke(remoteMachine);
             }
             else
