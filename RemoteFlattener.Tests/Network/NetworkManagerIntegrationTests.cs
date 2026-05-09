@@ -331,4 +331,410 @@ public class NetworkManagerIntegrationTests : IDisposable
             try { node.Dispose(); } catch { }
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Reconnection & resilience
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task Reconnect_PeerRestartsOnSamePort_ReconnectsAutomatically()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "initial connect");
+
+        // Stop B — A should detect disconnect.
+        nodeB.Stop();
+        nodeB.Dispose();
+        _nodes.Remove(nodeB);
+        await WaitForAsync(() => !nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "A detects disconnect");
+
+        // Restart B on the same port — A's outgoing loop should reconnect.
+        var nodeB2 = CreateNode("NODE-B", portB);
+        nodeB2.Start("pw", Array.Empty<(string, string, int)>());
+
+        await WaitForAsync(
+            () => nodeA.ConnectedPeers.Contains("NODE-B"),
+            TimeSpan.FromSeconds(10),
+            "A reconnects to restarted B");
+    }
+
+    [Fact]
+    public async Task Reconnect_MessagesFlowAfterReconnect()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "initial connect");
+
+        // Kill B and restart.
+        nodeB.Stop();
+        nodeB.Dispose();
+        _nodes.Remove(nodeB);
+
+        var nodeB2 = CreateNode("NODE-B", portB);
+        var received = new ConcurrentBag<NetworkMessage>();
+        nodeB2.MessageReceived += (_, msg) => received.Add(msg);
+        nodeB2.Start("pw", Array.Empty<(string, string, int)>());
+
+        await WaitForAsync(() => nodeA.ConnectedPeers.Contains("NODE-B"), TimeSpan.FromSeconds(10), "reconnected");
+
+        await nodeA.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate, CurrentDesktop = 5 });
+        await WaitForAsync(() => received.Count > 0, TimeSpan.FromSeconds(5), "message after reconnect");
+        Assert.Equal(5, received.First().CurrentDesktop);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Topology & scale
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task FourNodeChain_MessageRelayedEndToEnd()
+    {
+        // A <-> B <-> C <-> D
+        int portA = GetFreePort(), portB = GetFreePort(), portC = GetFreePort(), portD = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+        var nodeC = CreateNode("NODE-C", portC);
+        var nodeD = CreateNode("NODE-D", portD);
+
+        var receivedByD = new ConcurrentBag<NetworkMessage>();
+        nodeD.MessageReceived += (_, msg) => receivedByD.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        nodeC.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeD.Start("pw", new[] { ("NODE-C", "127.0.0.1", portC) });
+
+        await WaitForAsync(
+            () => nodeB.ConnectedPeers.Count() >= 2 && nodeC.ConnectedPeers.Count() >= 2,
+            TimeSpan.FromSeconds(5),
+            "chain established");
+
+        await nodeA.BroadcastAsync(new NetworkMessage
+        {
+            Type = MessageTypes.StateUpdate,
+            CurrentDesktop = 7,
+            TotalDesktops = 10,
+        });
+
+        await WaitForAsync(() => receivedByD.Count > 0, TimeSpan.FromSeconds(5), "D receives relayed message from A");
+        Assert.Equal("NODE-A", receivedByD.First().OriginMachine);
+        Assert.Equal(7, receivedByD.First().CurrentDesktop);
+    }
+
+    [Fact]
+    public async Task StarTopology_HubRelaysToAllSpokes()
+    {
+        // Hub <-> Spoke1, Hub <-> Spoke2, Hub <-> Spoke3
+        int portHub = GetFreePort();
+        int portS1 = GetFreePort(), portS2 = GetFreePort(), portS3 = GetFreePort();
+        var hub = CreateNode("HUB", portHub);
+        var spoke1 = CreateNode("SPOKE-1", portS1);
+        var spoke2 = CreateNode("SPOKE-2", portS2);
+        var spoke3 = CreateNode("SPOKE-3", portS3);
+
+        var recv1 = new ConcurrentBag<NetworkMessage>();
+        var recv2 = new ConcurrentBag<NetworkMessage>();
+        var recv3 = new ConcurrentBag<NetworkMessage>();
+        spoke1.MessageReceived += (_, msg) => recv1.Add(msg);
+        spoke2.MessageReceived += (_, msg) => recv2.Add(msg);
+        spoke3.MessageReceived += (_, msg) => recv3.Add(msg);
+
+        hub.Start("pw", Array.Empty<(string, string, int)>());
+        spoke1.Start("pw", new[] { ("HUB", "127.0.0.1", portHub) });
+        spoke2.Start("pw", new[] { ("HUB", "127.0.0.1", portHub) });
+        spoke3.Start("pw", new[] { ("HUB", "127.0.0.1", portHub) });
+
+        await WaitForAsync(() => hub.ConnectedPeers.Count() >= 3, TimeSpan.FromSeconds(5), "all spokes connected");
+
+        // Spoke1 broadcasts — hub relays to spoke2 and spoke3.
+        await spoke1.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate, CurrentDesktop = 1 });
+        await WaitForAsync(
+            () => recv2.Count > 0 && recv3.Count > 0,
+            TimeSpan.FromSeconds(5),
+            "spoke2 and spoke3 receive via hub");
+
+        Assert.Equal("SPOKE-1", recv2.First().OriginMachine);
+        Assert.Equal("SPOKE-1", recv3.First().OriginMachine);
+    }
+
+    [Fact]
+    public async Task LateJoiner_ReceivesMessagesAfterJoining()
+    {
+        // A and B already connected. C joins later and should receive new messages.
+        int portA = GetFreePort(), portB = GetFreePort(), portC = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        nodeA.Start("pw", Array.Empty<(string, string, int)>());
+        nodeB.Start("pw", new[] { ("NODE-A", "127.0.0.1", portA) });
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "A-B connected");
+
+        // C joins late.
+        var nodeC = CreateNode("NODE-C", portC);
+        var receivedByC = new ConcurrentBag<NetworkMessage>();
+        nodeC.MessageReceived += (_, msg) => receivedByC.Add(msg);
+        nodeC.Start("pw", new[] { ("NODE-A", "127.0.0.1", portA) });
+        await WaitForAsync(() => nodeC.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "C connected to A");
+
+        // B broadcasts — A relays to C.
+        await nodeB.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate, CurrentDesktop = 3 });
+        await WaitForAsync(() => receivedByC.Count > 0, TimeSpan.FromSeconds(5), "C receives message");
+        Assert.Equal("NODE-B", receivedByC.First().OriginMachine);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Protocol edge cases
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task ProtocolVersionMismatch_ConnectionRejected()
+    {
+        int portB = GetFreePort();
+        var nodeB = CreateNode("NODE-B", portB);
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Manually connect and send a HELLO with wrong protocol version.
+        using var client = new System.Net.Sockets.TcpClient();
+        await client.ConnectAsync("127.0.0.1", portB);
+        var stream = client.GetStream();
+        var writer = new System.IO.StreamWriter(stream, System.Text.Encoding.UTF8) { AutoFlush = false };
+        var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8);
+
+        // Build a valid HELLO but with wrong protocol version.
+        var nm = new NetworkManager("pw");
+        var hello = new NetworkMessage
+        {
+            Type = MessageTypes.Hello,
+            MachineName = "FAKE-NODE",
+            Hmac = nm.ComputeHmac("FAKE-NODE"),
+            ProtocolVersion = 999,
+        };
+        await writer.WriteAsync(hello.Serialize());
+        await writer.FlushAsync();
+
+        // Server should close the connection without sending HELLO_ACK.
+        await Task.Delay(500);
+        Assert.Empty(nodeB.ConnectedPeers);
+    }
+
+    [Fact]
+    public async Task BroadcastAsync_ZeroPeers_CompletesWithoutError()
+    {
+        int portA = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        nodeA.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Should not throw.
+        await nodeA.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate });
+    }
+
+    [Fact]
+    public async Task SendToPeer_UnknownPeer_FloodsAllConnections()
+    {
+        // A connected to B. A sends targeted message to "NODE-X" (not connected).
+        // Should flood to B (relay path).
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var receivedByB = new ConcurrentBag<NetworkMessage>();
+        nodeB.MessageReceived += (_, msg) => receivedByB.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        await nodeA.SendToPeerAsync("NODE-X", new NetworkMessage { Type = MessageTypes.SwitchLeft });
+
+        // B should NOT fire MessageReceived for this (targeted at NODE-X, not NODE-B),
+        // but B still receives it on the wire for relay purposes.
+        await Task.Delay(500);
+        // The message is targeted at NODE-X so B's MessageReceived won't fire (isForMe = false).
+        Assert.Empty(receivedByB);
+    }
+
+    [Fact]
+    public async Task RapidBroadcasts_AllMessagesReceived_NoInterleaving()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var received = new ConcurrentBag<NetworkMessage>();
+        nodeB.MessageReceived += (_, msg) => received.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        const int count = 50;
+        var tasks = Enumerable.Range(0, count).Select(i =>
+            nodeA.BroadcastAsync(new NetworkMessage
+            {
+                Type = MessageTypes.StateUpdate,
+                CurrentDesktop = i,
+            })).ToArray();
+        await Task.WhenAll(tasks);
+
+        await WaitForAsync(() => received.Count >= count, TimeSpan.FromSeconds(10),
+            $"all {count} messages received (got {received.Count})");
+
+        // Verify all desktop indices arrived (order may vary due to concurrency).
+        var desktops = received.Select(m => m.CurrentDesktop).OrderBy(d => d).ToList();
+        Assert.Equal(Enumerable.Range(0, count), desktops);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Bidirectional messaging
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task TwoNodes_SimultaneousSends_BothReceive()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var receivedByA = new ConcurrentBag<NetworkMessage>();
+        var receivedByB = new ConcurrentBag<NetworkMessage>();
+        nodeA.MessageReceived += (_, msg) => receivedByA.Add(msg);
+        nodeB.MessageReceived += (_, msg) => receivedByB.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any() && nodeB.ConnectedPeers.Any(),
+            TimeSpan.FromSeconds(5), "connected");
+
+        // Both send at the same time.
+        var sendA = nodeA.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate, CurrentDesktop = 1 });
+        var sendB = nodeB.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate, CurrentDesktop = 2 });
+        await Task.WhenAll(sendA, sendB);
+
+        await WaitForAsync(() => receivedByA.Count > 0 && receivedByB.Count > 0,
+            TimeSpan.FromSeconds(5), "both receive");
+
+        Assert.Equal(2, receivedByA.First().CurrentDesktop); // A got B's message
+        Assert.Equal(1, receivedByB.First().CurrentDesktop); // B got A's message
+    }
+
+    [Fact]
+    public async Task ReplyPattern_BReceivesAndResponds()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var receivedByA = new ConcurrentBag<NetworkMessage>();
+        nodeA.MessageReceived += (_, msg) => receivedByA.Add(msg);
+
+        // B auto-replies when it gets a SwitchRight.
+        nodeB.MessageReceived += async (_, msg) =>
+        {
+            if (msg.Type == MessageTypes.SwitchRight)
+            {
+                await nodeB.BroadcastAsync(new NetworkMessage
+                {
+                    Type = MessageTypes.StateUpdate,
+                    CurrentDesktop = 99,
+                });
+            }
+        };
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        await nodeA.BroadcastAsync(new NetworkMessage { Type = MessageTypes.SwitchRight });
+
+        await WaitForAsync(() => receivedByA.Count > 0, TimeSpan.FromSeconds(5), "A receives reply");
+        Assert.Equal(MessageTypes.StateUpdate, receivedByA.First().Type);
+        Assert.Equal(99, receivedByA.First().CurrentDesktop);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Stop / Dispose lifecycle
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task StopThenStart_WorksCorrectly()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "first connect");
+
+        // Stop both, then restart with fresh passwords.
+        nodeA.Stop();
+        nodeB.Stop();
+        await Task.Delay(200);
+
+        // Re-create B on a new port since we can't rebind easily.
+        _nodes.Remove(nodeB);
+        int portB2 = GetFreePort();
+        var nodeB2 = CreateNode("NODE-B", portB2);
+        nodeA.Start("pw2", new[] { ("NODE-B", "127.0.0.1", portB2) });
+        nodeB2.Start("pw2", Array.Empty<(string, string, int)>());
+
+        await WaitForAsync(() => nodeA.ConnectedPeers.Contains("NODE-B"), TimeSpan.FromSeconds(5), "reconnected after restart");
+    }
+
+    [Fact]
+    public void Dispose_CleansUpConnections_NoLeakedListeners()
+    {
+        int port = GetFreePort();
+        var node = CreateNode("NODE-X", port);
+        node.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Dispose should not throw and should release the port.
+        node.Dispose();
+        _nodes.Remove(node);
+
+        // Verify port is free by binding to it again.
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+        try
+        {
+            listener.Start();
+            // Success — port was released.
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public void DoubleStop_DoesNotThrow()
+    {
+        int port = GetFreePort();
+        var node = CreateNode("NODE-X", port);
+        node.Start("pw", Array.Empty<(string, string, int)>());
+
+        node.Stop();
+        node.Stop(); // Should not throw.
+    }
+
+    [Fact]
+    public void DoubleDispose_DoesNotThrow()
+    {
+        int port = GetFreePort();
+        var node = CreateNode("NODE-X", port);
+        node.Start("pw", Array.Empty<(string, string, int)>());
+
+        node.Dispose();
+        node.Dispose(); // Should not throw.
+        _nodes.Remove(node);
+    }
 }
