@@ -737,4 +737,271 @@ public class NetworkManagerIntegrationTests : IDisposable
         node.Dispose(); // Should not throw.
         _nodes.Remove(node);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Malformed / hostile input
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task MalformedInput_GarbageBytes_NodeSurvives()
+    {
+        int portB = GetFreePort();
+        var nodeB = CreateNode("NODE-B", portB);
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Connect and send random garbage.
+        using var client = new System.Net.Sockets.TcpClient();
+        await client.ConnectAsync("127.0.0.1", portB);
+        var stream = client.GetStream();
+        await stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("not json at all\nmore garbage\n"));
+        await stream.FlushAsync();
+        client.Close();
+
+        await Task.Delay(500);
+
+        // Node should still be alive and accepting connections.
+        int portA = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5),
+            "B still accepts connections after garbage input");
+    }
+
+    [Fact]
+    public async Task MalformedInput_WrongMessageTypeDuringHandshake_Rejected()
+    {
+        int portB = GetFreePort();
+        var nodeB = CreateNode("NODE-B", portB);
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Send a valid JSON message but with wrong type (STATE_UPDATE instead of HELLO).
+        using var client = new System.Net.Sockets.TcpClient();
+        await client.ConnectAsync("127.0.0.1", portB);
+        var stream = client.GetStream();
+        var writer = new System.IO.StreamWriter(stream, System.Text.Encoding.UTF8);
+        var badMsg = new NetworkMessage { Type = MessageTypes.StateUpdate, MachineName = "FAKE" };
+        await writer.WriteAsync(badMsg.Serialize());
+        await writer.FlushAsync();
+
+        await Task.Delay(500);
+        Assert.Empty(nodeB.ConnectedPeers);
+    }
+
+    [Fact]
+    public async Task MalformedInput_ImmediateDisconnect_NodeSurvives()
+    {
+        int portB = GetFreePort();
+        var nodeB = CreateNode("NODE-B", portB);
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Connect then immediately close — no data sent.
+        using var client = new System.Net.Sockets.TcpClient();
+        await client.ConnectAsync("127.0.0.1", portB);
+        client.Close();
+
+        await Task.Delay(500);
+
+        // Node should still work.
+        int portA = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5),
+            "B still accepts connections after immediate disconnect");
+    }
+
+    [Fact]
+    public async Task MalformedInput_HelloWithEmptyHmac_Rejected()
+    {
+        int portB = GetFreePort();
+        var nodeB = CreateNode("NODE-B", portB);
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        using var client = new System.Net.Sockets.TcpClient();
+        await client.ConnectAsync("127.0.0.1", portB);
+        var stream = client.GetStream();
+        var writer = new System.IO.StreamWriter(stream, System.Text.Encoding.UTF8);
+
+        var hello = new NetworkMessage
+        {
+            Type = MessageTypes.Hello,
+            MachineName = "ATTACKER",
+            Hmac = "",
+            ProtocolVersion = NetworkManager.ProtocolVersion,
+        };
+        await writer.WriteAsync(hello.Serialize());
+        await writer.FlushAsync();
+
+        await Task.Delay(500);
+        Assert.Empty(nodeB.ConnectedPeers);
+    }
+
+    [Fact]
+    public async Task MalformedInput_HelloWithMissingMachineName_Rejected()
+    {
+        int portB = GetFreePort();
+        var nodeB = CreateNode("NODE-B", portB);
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        using var client = new System.Net.Sockets.TcpClient();
+        await client.ConnectAsync("127.0.0.1", portB);
+        var stream = client.GetStream();
+        var writer = new System.IO.StreamWriter(stream, System.Text.Encoding.UTF8);
+
+        var nm = new NetworkManager("pw");
+        var hello = new NetworkMessage
+        {
+            Type = MessageTypes.Hello,
+            MachineName = null,
+            Hmac = nm.ComputeHmac(""),
+            ProtocolVersion = NetworkManager.ProtocolVersion,
+        };
+        await writer.WriteAsync(hello.Serialize());
+        await writer.FlushAsync();
+
+        await Task.Delay(500);
+        Assert.Empty(nodeB.ConnectedPeers);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Field preservation through relay
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task Relay_AllNetworkMessageFields_PreservedThroughRelay()
+    {
+        // A <-> B <-> C — verify all fields survive the relay hop.
+        int portA = GetFreePort(), portB = GetFreePort(), portC = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+        var nodeC = CreateNode("NODE-C", portC);
+
+        var receivedByC = new ConcurrentBag<NetworkMessage>();
+        nodeC.MessageReceived += (_, msg) => receivedByC.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        nodeC.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+
+        await WaitForAsync(() => nodeB.ConnectedPeers.Count() >= 2, TimeSpan.FromSeconds(5), "chain established");
+
+        await nodeA.BroadcastAsync(new NetworkMessage
+        {
+            Type = MessageTypes.StateUpdate,
+            CurrentDesktop = 3,
+            TotalDesktops = 5,
+            IsRdpServer = true,
+            RdpPeers = new List<string> { "SERVER-1", "SERVER-2" },
+            DesktopNames = new List<string> { "Work", "Personal", "Gaming", "Media", "Dev" },
+            WallpaperThumbnails = new List<string> { "base64img1", "", "base64img3" },
+            RdpHostedServers = new Dictionary<string, int> { ["SERVER-1"] = 0, ["SERVER-2"] = 2 },
+        });
+
+        await WaitForAsync(() => receivedByC.Count > 0, TimeSpan.FromSeconds(5), "C receives relayed message");
+        var msg = receivedByC.First();
+
+        Assert.Equal(MessageTypes.StateUpdate, msg.Type);
+        Assert.Equal("NODE-A", msg.OriginMachine);
+        Assert.Equal(3, msg.CurrentDesktop);
+        Assert.Equal(5, msg.TotalDesktops);
+        Assert.True(msg.IsRdpServer);
+        Assert.Equal(new[] { "SERVER-1", "SERVER-2" }, msg.RdpPeers);
+        Assert.Equal(new[] { "Work", "Personal", "Gaming", "Media", "Dev" }, msg.DesktopNames);
+        Assert.Equal(new[] { "base64img1", "", "base64img3" }, msg.WallpaperThumbnails);
+        Assert.Equal(2, msg.RdpHostedServers!.Count);
+        Assert.Equal(0, msg.RdpHostedServers["SERVER-1"]);
+        Assert.Equal(2, msg.RdpHostedServers["SERVER-2"]);
+    }
+
+    [Fact]
+    public async Task Relay_OriginMachine_NotOverwrittenByRelayNode()
+    {
+        // A <-> B <-> C — OriginMachine should stay "NODE-A" even after B relays.
+        int portA = GetFreePort(), portB = GetFreePort(), portC = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+        var nodeC = CreateNode("NODE-C", portC);
+
+        var receivedByB = new ConcurrentBag<NetworkMessage>();
+        var receivedByC = new ConcurrentBag<NetworkMessage>();
+        nodeB.MessageReceived += (_, msg) => receivedByB.Add(msg);
+        nodeC.MessageReceived += (_, msg) => receivedByC.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        nodeC.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        await WaitForAsync(() => nodeB.ConnectedPeers.Count() >= 2, TimeSpan.FromSeconds(5), "chain ready");
+
+        await nodeA.BroadcastAsync(new NetworkMessage { Type = MessageTypes.TaskView });
+
+        await WaitForAsync(() => receivedByC.Count > 0, TimeSpan.FromSeconds(5), "C receives");
+        Assert.Equal("NODE-A", receivedByB.First().OriginMachine);
+        Assert.Equal("NODE-A", receivedByC.First().OriginMachine);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ConnectedPeers accuracy
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task ConnectedPeers_AccurateAfterMultipleConnectsAndDisconnects()
+    {
+        int portHub = GetFreePort();
+        var hub = CreateNode("HUB", portHub);
+        hub.Start("pw", Array.Empty<(string, string, int)>());
+
+        // Connect three peers.
+        var peers = new List<(NetworkManager node, int port)>();
+        for (int i = 0; i < 3; i++)
+        {
+            int p = GetFreePort();
+            var peer = CreateNode($"PEER-{i}", p);
+            peer.Start("pw", new[] { ("HUB", "127.0.0.1", portHub) });
+            peers.Add((peer, p));
+        }
+
+        await WaitForAsync(() => hub.ConnectedPeers.Count() == 3, TimeSpan.FromSeconds(5), "all 3 connected");
+        Assert.Equal(3, hub.ConnectedPeers.Count());
+
+        // Disconnect PEER-1.
+        peers[1].node.Stop();
+        await WaitForAsync(() => hub.ConnectedPeers.Count() == 2, TimeSpan.FromSeconds(5), "PEER-1 disconnected");
+        Assert.DoesNotContain("PEER-1", hub.ConnectedPeers);
+        Assert.Contains("PEER-0", hub.ConnectedPeers);
+        Assert.Contains("PEER-2", hub.ConnectedPeers);
+
+        // Disconnect PEER-0.
+        peers[0].node.Stop();
+        await WaitForAsync(() => hub.ConnectedPeers.Count() == 1, TimeSpan.FromSeconds(5), "PEER-0 disconnected");
+        Assert.Single(hub.ConnectedPeers);
+        Assert.Contains("PEER-2", hub.ConnectedPeers);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // All message types
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData(MessageTypes.SwitchLeft)]
+    [InlineData(MessageTypes.SwitchRight)]
+    [InlineData(MessageTypes.SwitchToDesktop)]
+    [InlineData(MessageTypes.TaskView)]
+    [InlineData(MessageTypes.StateUpdate)]
+    public async Task AllMessageTypes_CanBeSentAndReceived(string messageType)
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var received = new ConcurrentBag<NetworkMessage>();
+        nodeB.MessageReceived += (_, msg) => received.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        await nodeA.BroadcastAsync(new NetworkMessage { Type = messageType });
+
+        await WaitForAsync(() => received.Count > 0, TimeSpan.FromSeconds(5), $"{messageType} received");
+        Assert.Equal(messageType, received.First().Type);
+    }
 }
