@@ -1,11 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
 using System.Diagnostics;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using RemoteFlattener.Hotkeys;
 using RemoteFlattener.Logging;
@@ -38,6 +41,19 @@ public partial class MainWindow : Window
     public ObservableCollection<MachineInfo> Connections { get; } = new();
 
     private const int MaxLogLines = 500;
+    private int _logLineCount;
+
+    // ── Static frozen brushes for status label (avoid per-call allocations) ───
+    private static readonly SolidColorBrush RunningForeground = Freeze(new SolidColorBrush(Color.FromRgb(0x5A, 0xD0, 0x6A)));
+    private static readonly SolidColorBrush RunningBackground = Freeze(new SolidColorBrush(Color.FromArgb(0xFF, 0x1E, 0x35, 0x1E)));
+    private static readonly SolidColorBrush StoppedForeground = Freeze(new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x80)));
+    private static readonly SolidColorBrush StoppedBackground = Freeze(new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x38)));
+    private static SolidColorBrush Freeze(SolidColorBrush b) { b.Freeze(); return b; }
+
+    /// <summary>
+    /// The local machine name from the network manager (if running) or the environment.
+    /// </summary>
+    private string LocalName => _networkManager?.LocalMachineName ?? Environment.MachineName;
 
     public MainWindow()
     {
@@ -66,7 +82,7 @@ public partial class MainWindow : Window
             foreach (var name in s.Machines
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                if (!Connections.Any(m => m.MachineName.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                if (FindPeer(name) == null)
                     Connections.Add(new MachineInfo { MachineName = name });
             }
         }
@@ -163,7 +179,7 @@ public partial class MainWindow : Window
         int added = 0;
         foreach (var peer in peers)
         {
-            if (!Connections.Any(m => m.MachineName.Equals(peer.MachineName, StringComparison.OrdinalIgnoreCase)))
+            if (FindPeer(peer.MachineName) == null)
             {
                 Connections.Add(new MachineInfo { MachineName = peer.MachineName });
                 added++;
@@ -200,8 +216,7 @@ public partial class MainWindow : Window
     {
         var name = AddPeerBox.Text?.Trim() ?? string.Empty;
         if (string.IsNullOrEmpty(name)) return;
-        if (!Connections.Any(m => MachineInfo.NormalizeHostname(m.MachineName)
-                .Equals(MachineInfo.NormalizeHostname(name), StringComparison.OrdinalIgnoreCase)))
+        if (FindPeer(name) == null)
         {
             Connections.Add(new MachineInfo { MachineName = name });
             SaveSettings();
@@ -211,10 +226,9 @@ public partial class MainWindow : Window
 
     private void RemovePeer_Click(object sender, RoutedEventArgs e)
     {
-        var name = (sender as System.Windows.Controls.Button)?.Tag as string;
+        var name = (sender as Button)?.Tag as string;
         if (string.IsNullOrEmpty(name)) return;
-        var entry = Connections.FirstOrDefault(m =>
-            m.MachineName.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var entry = FindPeer(name);
         if (entry != null)
         {
             Connections.Remove(entry);
@@ -222,25 +236,20 @@ public partial class MainWindow : Window
         }
     }
 
-    private void PeersToggle_Click(object sender, RoutedEventArgs e)
-    {
-        var collapsed = PeersSection.Visibility == Visibility.Collapsed;
-        PeersSection.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
-        PeersChevron.Text       = collapsed ? "▾" : "▸";
-    }
+    private void PeersToggle_Click(object sender, RoutedEventArgs e) =>
+        ToggleSection(PeersSection, PeersChevron);
 
-    private void PasswordToggle_Click(object sender, RoutedEventArgs e)
-    {
-        var collapsed = PasswordSection.Visibility == Visibility.Collapsed;
-        PasswordSection.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
-        PasswordChevron.Text       = collapsed ? "▾" : "▸";
-    }
+    private void PasswordToggle_Click(object sender, RoutedEventArgs e) =>
+        ToggleSection(PasswordSection, PasswordChevron);
 
-    private void LogToggle_Click(object sender, RoutedEventArgs e)
+    private void LogToggle_Click(object sender, RoutedEventArgs e) =>
+        ToggleSection(LogBox, LogChevron);
+
+    private static void ToggleSection(UIElement section, System.Windows.Controls.TextBlock chevron)
     {
-        var collapsed = LogBox.Visibility == Visibility.Collapsed;
-        LogBox.Visibility  = collapsed ? Visibility.Visible : Visibility.Collapsed;
-        LogChevron.Text    = collapsed ? "▾" : "▸";
+        var collapsed = section.Visibility == Visibility.Collapsed;
+        section.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        chevron.Text       = collapsed ? "▾" : "▸";
     }
 
     private void GeneratePassword_Click(object sender, RoutedEventArgs e)
@@ -372,12 +381,27 @@ public partial class MainWindow : Window
         Dispatcher.InvokeAsync(() =>
         {
             LogBox.AppendText(line + Environment.NewLine);
+            _logLineCount++;
 
-            // Trim to MaxLogLines to avoid unbounded growth.
-            var text = LogBox.Text;
-            var lines = text.Split('\n');
-            if (lines.Length > MaxLogLines)
-                LogBox.Text = string.Join('\n', lines[^MaxLogLines..]);
+            // Trim in bulk when we exceed the threshold, cutting back to half
+            // to avoid re-trimming on every subsequent line.
+            if (_logLineCount > MaxLogLines)
+            {
+                var text = LogBox.Text;
+                int linesToRemove = _logLineCount - MaxLogLines / 2;
+                int cutIndex = 0;
+                for (int i = 0; i < linesToRemove && cutIndex < text.Length; i++)
+                {
+                    int nl = text.IndexOf('\n', cutIndex);
+                    if (nl < 0) break;
+                    cutIndex = nl + 1;
+                }
+                if (cutIndex > 0 && cutIndex < text.Length)
+                {
+                    LogBox.Text = text[cutIndex..];
+                    _logLineCount -= linesToRemove;
+                }
+            }
 
             LogBox.ScrollToEnd();
         });
@@ -427,20 +451,16 @@ public partial class MainWindow : Window
         if (_isRunning)
         {
             StatusLabel.Text       = connected > 0 ? $"● Running · {connected} peer{(connected == 1 ? "" : "s")}" : "● Running";
-            StatusLabel.Foreground = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0x5A, 0xD0, 0x6A));
-            StatusPill.Background  = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromArgb(0xFF, 0x1E, 0x35, 0x1E));
+            StatusLabel.Foreground = RunningForeground;
+            StatusPill.Background  = RunningBackground;
             StartButton.Content = "■  Stop";
             StartButton.Style   = (Style)FindResource("DangerButton");
         }
         else
         {
             StatusLabel.Text       = "● Stopped";
-            StatusLabel.Foreground = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0x66, 0x66, 0x80));
-            StatusPill.Background  = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0x2A, 0x2A, 0x38));
+            StatusLabel.Foreground = StoppedForeground;
+            StatusPill.Background  = StoppedBackground;
             StartButton.Content = "▶  Start";
             StartButton.Style   = (Style)FindResource("PrimaryButton");
         }
@@ -509,9 +529,7 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
-            var normalized = MachineInfo.NormalizeHostname(machineName);
-            var info = Connections.FirstOrDefault(m =>
-                MachineInfo.NormalizeHostname(m.MachineName).Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            var info = FindPeer(machineName);
             if (info != null)
                 info.IsConnected = false;
             RefreshStatusLabel();
@@ -535,7 +553,7 @@ public partial class MainWindow : Window
                 AppLogger.Log("Win+Tab: opening overlay.");
                 _treeWindow = new TreeWindow(
                     Connections,
-                    _networkManager?.LocalMachineName ?? Environment.MachineName,
+                    LocalName,
                     _isRdpServer,
                     RequestTaskView,
                     RequestSwitchToDesktop,
@@ -565,8 +583,7 @@ public partial class MainWindow : Window
         _treeWindow?.Close();
         _treeWindow = null;
 
-        var localName = _networkManager?.LocalMachineName ?? Environment.MachineName;
-        if (machineName.Equals(localName, StringComparison.OrdinalIgnoreCase))
+        if (machineName.Equals(LocalName, StringComparison.OrdinalIgnoreCase))
         {
             AppLogger.Log("Task View requested for local machine.");
             InvokeTaskView();
@@ -580,8 +597,7 @@ public partial class MainWindow : Window
 
     private void RequestSwitchToDesktop(string machineName, int desktopIndex)
     {
-        var localName = _networkManager?.LocalMachineName ?? Environment.MachineName;
-        if (machineName.Equals(localName, StringComparison.OrdinalIgnoreCase))
+        if (machineName.Equals(LocalName, StringComparison.OrdinalIgnoreCase))
         {
             AppLogger.Log($"Switch to desktop {desktopIndex} on local machine.");
             VirtualDesktopProvider.SwitchToIndex(desktopIndex);
@@ -639,23 +655,16 @@ public partial class MainWindow : Window
         info.IsRdpServer         = msg.IsRdpServer;
         info.IsConnected         = true;
         info.RdpPeers            = msg.RdpPeers            ?? new();
-        info.RdpHostedServers    = msg.RdpHostedServers != null
-            ? new Dictionary<string, int>(
-                msg.RdpHostedServers.ToDictionary(
-                    kv => MachineInfo.NormalizeHostname(kv.Key),
-                    kv => kv.Value),
-                StringComparer.OrdinalIgnoreCase)
-            : new();
+        info.RdpHostedServers    = NormalizeRdpHostedServers(msg.RdpHostedServers);
         info.DesktopNames        = msg.DesktopNames        ?? new();
         info.WallpaperThumbnails = msg.WallpaperThumbnails ?? new();
 
         // Ensure every machine the sender knows about appears in our list.
         // We only add entries — we never downgrade a directly-connected peer to offline.
-        var localName = _networkManager?.LocalMachineName ?? Environment.MachineName;
         foreach (var peer in info.RdpPeers)
         {
             if (string.IsNullOrWhiteSpace(peer)) continue;
-            if (peer.Equals(localName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (peer.Equals(LocalName, StringComparison.OrdinalIgnoreCase)) continue;
             var peerInfo = GetOrAdd(peer);
             // Only mark as indirect if not already directly connected.
             if (!peerInfo.IsConnected)
@@ -664,17 +673,40 @@ public partial class MainWindow : Window
         RefreshStatusLabel();
     }
 
-    private MachineInfo GetOrAdd(string machineName)
+    /// <summary>
+    /// Finds an existing peer by normalized hostname, or null if not present.
+    /// </summary>
+    private MachineInfo? FindPeer(string machineName)
     {
         var normalized = MachineInfo.NormalizeHostname(machineName);
-        var info = Connections.FirstOrDefault(m =>
+        return Connections.FirstOrDefault(m =>
             MachineInfo.NormalizeHostname(m.MachineName).Equals(normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private MachineInfo GetOrAdd(string machineName)
+    {
+        var info = FindPeer(machineName);
         if (info == null)
         {
             info = new MachineInfo { MachineName = machineName };
             Connections.Add(info);
         }
         return info;
+    }
+
+    /// <summary>
+    /// Normalizes an RdpHostedServers dictionary so all keys use canonical hostnames.
+    /// Returns an empty dictionary if the input is null.
+    /// </summary>
+    private static Dictionary<string, int> NormalizeRdpHostedServers(Dictionary<string, int>? raw)
+    {
+        if (raw == null || raw.Count == 0)
+            return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        return new Dictionary<string, int>(
+            raw.ToDictionary(
+                kv => MachineInfo.NormalizeHostname(kv.Key),
+                kv => kv.Value),
+            StringComparer.OrdinalIgnoreCase);
     }
 
     private void BroadcastOurState()
@@ -696,11 +728,8 @@ public partial class MainWindow : Window
                 IsRdpServer         = _isRdpServer,
                 RdpPeers            = _networkManager.ConnectedPeers.ToList(),
                 RdpHostedServers    = _isRdpServer ? null
-                    : RdpWindowLocator.GetRdpDesktopMap(_networkManager.ConnectedPeers.ToList())
-                        .ToDictionary(
-                            kv => MachineInfo.NormalizeHostname(kv.Key),
-                            kv => kv.Value,
-                            StringComparer.OrdinalIgnoreCase),
+                    : NormalizeRdpHostedServers(
+                        RdpWindowLocator.GetRdpDesktopMap(_networkManager.ConnectedPeers.ToList())),
                 DesktopNames        = apiDesktops.Select(d => d.DisplayName).ToList(),
                 WallpaperThumbnails = apiDesktops.Select(d => EncodeWallpaperThumbnail(d.WallpaperPath) ?? "").ToList()
             };
