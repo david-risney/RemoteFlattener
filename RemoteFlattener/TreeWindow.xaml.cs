@@ -35,8 +35,16 @@ public partial class TreeWindow : Window
     // Debounce rapid back-to-back state changes into a single redraw.
     private readonly DispatcherTimer _refreshTimer;
 
+    // Polls for changes that lack events (mstsc window positions) and serves
+    // as a fallback when VirtualDesktop COM events are unavailable.
+    private readonly DispatcherTimer _pollTimer;
+
     // Last-computed mstsc window → local desktop index mapping.
     private Dictionary<string, int> _rdpDesktopMap = new(StringComparer.OrdinalIgnoreCase);
+
+    // Snapshot of desktop count and names from the last build — used for dirty-checking.
+    private int _cachedDesktopCount;
+    private string _cachedDesktopSignature = string.Empty;
 
     // Cached on each BuildTree call so DesktopRowsFor() (now an instance method) can access it.
     private VirtualDesktopProvider.DesktopInfo[] _localApiDesktops = Array.Empty<VirtualDesktopProvider.DesktopInfo>();
@@ -73,6 +81,11 @@ public partial class TreeWindow : Window
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         _refreshTimer.Tick += (_, _) => { _refreshTimer.Stop(); RefreshTree(); };
 
+        // Poll for changes that lack events (mstsc window positions, desktop
+        // add/remove/rename when COM events are unavailable on this OS build).
+        _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _pollTimer.Tick += (_, _) => PollForChanges();
+
         // Watch collection membership changes.
         _peers.CollectionChanged += OnPeersChanged;
         // Watch property changes on each existing peer.
@@ -83,6 +96,7 @@ public partial class TreeWindow : Window
         VirtualDesktopProvider.DesktopChanged += OnLocalDesktopChanged;
 
         RefreshTree();
+        _pollTimer.Start();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -94,6 +108,7 @@ public partial class TreeWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _refreshTimer.Stop();
+        _pollTimer.Stop();
         _peers.CollectionChanged -= OnPeersChanged;
         foreach (var p in _peers)
             p.PropertyChanged -= OnPeerPropertyChanged;
@@ -120,6 +135,61 @@ public partial class TreeWindow : Window
     // DesktopChanged fires on the COM event thread — marshal to dispatcher.
     private void OnLocalDesktopChanged() =>
         Dispatcher.BeginInvoke(ScheduleRefresh);
+
+    /// <summary>
+    /// Periodically checks for changes that lack events: mstsc window positions
+    /// and (as a fallback) desktop count/name changes if VirtualDesktop COM events
+    /// are unavailable on this OS build.
+    /// </summary>
+    private void PollForChanges()
+    {
+        if (_navKeyActive) return;
+
+        bool dirty = false;
+
+        // Check mstsc window → virtual desktop mapping (no event exists for this).
+        if (!_localIsRdpServer)
+        {
+            var allNames = _peers.Select(p => MachineInfo.NormalizeHostname(p.MachineName)).ToList();
+            var currentMap = RdpWindowLocator.GetRdpDesktopMap(allNames);
+            if (!RdpDesktopMapEquals(_rdpDesktopMap, currentMap))
+                dirty = true;
+        }
+
+        // Check desktop count and names — serves as a fallback when COM events
+        // (Created/Destroyed/Renamed) aren't firing on this OS build.
+        var desktops = VirtualDesktopProvider.GetAllDesktops();
+        var sig = BuildDesktopSignature(desktops);
+        if (desktops.Length != _cachedDesktopCount || sig != _cachedDesktopSignature)
+            dirty = true;
+
+        if (dirty)
+            ScheduleRefresh();
+    }
+
+    private static bool RdpDesktopMapEquals(
+        Dictionary<string, int> a,
+        Dictionary<string, int> b)
+    {
+        if (a.Count != b.Count) return false;
+        foreach (var kv in a)
+            if (!b.TryGetValue(kv.Key, out var v) || v != kv.Value)
+                return false;
+        return true;
+    }
+
+    private static string BuildDesktopSignature(VirtualDesktopProvider.DesktopInfo[] desktops)
+    {
+        if (desktops.Length == 0) return string.Empty;
+        // Cheap signature: count + concatenated names + current index.
+        var sb = new System.Text.StringBuilder();
+        foreach (var d in desktops)
+        {
+            sb.Append(d.Index).Append(':').Append(d.DisplayName)
+              .Append(':').Append(d.IsCurrent ? '1' : '0').Append('|');
+        }
+        return sb.ToString();
+    }
 
     // Suppresses tree rebuilds while the user is actively navigating with arrow keys,
     // so the highlight doesn't jump or reset mid-keypress.
@@ -169,6 +239,8 @@ public partial class TreeWindow : Window
 
         var localApiDesktops = VirtualDesktopProvider.GetAllDesktops();
         _localApiDesktops    = localApiDesktops;   // cache for GetDesktopRowsFor()
+        _cachedDesktopCount     = localApiDesktops.Length;
+        _cachedDesktopSignature = BuildDesktopSignature(localApiDesktops);
         var allMachineNames  = _peers.Select(p => p.MachineName).ToList();
 
         // Build the local RdpDesktopMap — only meaningful on a client (non-server) node.
@@ -440,15 +512,19 @@ public partial class TreeWindow : Window
         var desktops = GetDesktopRowsFor(client, parentIsActive);
         if (desktops.Length == 0) return;
 
-        // Group remote servers by desktop index from the broadcast map.
-        // hostedMap keys are always normalized short names; s.MachineName may be a FQDN,
-        // so normalize before lookup.
+        // Group machines-with-mstsc-windows by the local desktop index reported in the
+        // hosted map.  hostedMap keys are always normalized short names; MachineName may be
+        // a FQDN, so normalize before lookup.
+        // NOTE: we intentionally do NOT filter by IsRdpServer here — a peer can have an
+        // mstsc window pointing to it while its RemoteFlattener instance is running in the
+        // physical console session (SM_REMOTESESSION=0), causing it to self-report
+        // IsRdpServer=false even though this machine is actively connecting to it via RDP.
+        // The hostedMap itself (built from the live window scan) is the authoritative source.
         var hostedMap = client.RdpHostedServers;
         var serversByDesktop = all
-            .Where(m => m.IsRdpServer &&
-                        !m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase))
-            .Where(s => hostedMap.ContainsKey(MachineInfo.NormalizeHostname(s.MachineName)))
-            .GroupBy(s => hostedMap[MachineInfo.NormalizeHostname(s.MachineName)])
+            .Where(m => !m.MachineName.Equals(_localMachineName, StringComparison.OrdinalIgnoreCase) &&
+                        hostedMap.ContainsKey(MachineInfo.NormalizeHostname(m.MachineName)))
+            .GroupBy(m => hostedMap[MachineInfo.NormalizeHostname(m.MachineName)])
             .ToDictionary(g => g.Key, g => g.ToList());
 
         // If we're the server, find which desktop index we belong to.
