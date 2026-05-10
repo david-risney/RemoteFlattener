@@ -290,12 +290,10 @@ public partial class MainWindow : Window
         {
             AppLogger.Log("Using VirtualDesktop API change events for state broadcasting.");
             VirtualDesktopProvider.DesktopChanged += OnDesktopChangedEvent;
-            // Still send an initial state after 1 s so peers see us right away.
-            _stateTimer = new Timer(_ =>
-            {
-                BroadcastOurState();
-                _stateTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-            }, null, 1_000, Timeout.Infinite);
+            // Send an initial state after 1 s so peers see us right away,
+            // then re-broadcast every 30 s to catch mstsc window position changes
+            // (no Windows event exists for windows moving between virtual desktops).
+            _stateTimer = new Timer(_ => BroadcastOurState(), null, 1_000, 30_000);
         }
         else
         {

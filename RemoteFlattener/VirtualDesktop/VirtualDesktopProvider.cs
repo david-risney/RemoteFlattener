@@ -47,7 +47,12 @@ public static class VirtualDesktopProvider
 
             if (_available)
             {
-                WindowsDesktop.VirtualDesktop.CurrentChanged += OnCurrentChanged;
+                WindowsDesktop.VirtualDesktop.CurrentChanged    += OnCurrentChanged;
+                WindowsDesktop.VirtualDesktop.Created            += OnDesktopLayoutChanged;
+                WindowsDesktop.VirtualDesktop.Destroyed          += OnDesktopDestroyedChanged;
+                WindowsDesktop.VirtualDesktop.Moved              += OnDesktopMovedChanged;
+                WindowsDesktop.VirtualDesktop.Renamed            += OnDesktopRenamedChanged;
+                WindowsDesktop.VirtualDesktop.WallpaperChanged   += OnDesktopWallpaperChanged;
                 AppLogger.Log($"VirtualDesktop API available — {desktops!.Length} desktop(s) detected.");
             }
         }
@@ -220,13 +225,39 @@ public static class VirtualDesktopProvider
         catch { /* don't let a subscriber crash the COM event thread */ }
     }
 
+    private static void OnDesktopLayoutChanged(object? sender, WindowsDesktop.VirtualDesktop e)
+        => RaiseDesktopChanged();
+
+    private static void OnDesktopDestroyedChanged(object? sender, VirtualDesktopDestroyEventArgs e)
+        => RaiseDesktopChanged();
+
+    private static void OnDesktopMovedChanged(object? sender, VirtualDesktopMovedEventArgs e)
+        => RaiseDesktopChanged();
+
+    private static void OnDesktopRenamedChanged(object? sender, VirtualDesktopRenamedEventArgs e)
+        => RaiseDesktopChanged();
+
+    private static void OnDesktopWallpaperChanged(object? sender, VirtualDesktopWallpaperChangedEventArgs e)
+        => RaiseDesktopChanged();
+
+    private static void RaiseDesktopChanged()
+    {
+        try { DesktopChanged?.Invoke(); }
+        catch { /* don't let a subscriber crash the COM event thread */ }
+    }
+
     private static void MarkUnavailable(Exception ex)
     {
         if (!_available) return;
         _available = false;
         try
         {
-            WindowsDesktop.VirtualDesktop.CurrentChanged -= OnCurrentChanged;
+            WindowsDesktop.VirtualDesktop.CurrentChanged    -= OnCurrentChanged;
+            WindowsDesktop.VirtualDesktop.Created            -= OnDesktopLayoutChanged;
+            WindowsDesktop.VirtualDesktop.Destroyed          -= OnDesktopDestroyedChanged;
+            WindowsDesktop.VirtualDesktop.Moved              -= OnDesktopMovedChanged;
+            WindowsDesktop.VirtualDesktop.Renamed            -= OnDesktopRenamedChanged;
+            WindowsDesktop.VirtualDesktop.WallpaperChanged   -= OnDesktopWallpaperChanged;
         }
         catch { }
         AppLogger.Log($"VirtualDesktop API failed mid-session ({ex.GetType().Name}: {ex.Message}). " +
