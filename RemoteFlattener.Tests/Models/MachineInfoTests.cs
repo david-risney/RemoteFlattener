@@ -97,6 +97,18 @@ public class MachineInfoTests
         Assert.Contains(nameof(MachineInfo.CurrentDesktop), events);
     }
 
+    [Fact]
+    public void RdpClientName_Changed_FiresPropertyChanged()
+    {
+        var info   = new MachineInfo();
+        var events = new List<string?>();
+        info.PropertyChanged += (_, e) => events.Add(e.PropertyName);
+
+        info.RdpClientName = "DAVRIS-10";
+
+        Assert.Contains(nameof(MachineInfo.RdpClientName), events);
+    }
+
     // ── Collection defaults ───────────────────────────────────────────────
 
     [Fact]
@@ -105,6 +117,13 @@ public class MachineInfoTests
         var info = new MachineInfo();
         Assert.NotNull(info.RdpPeers);
         Assert.Empty(info.RdpPeers);
+    }
+
+    [Fact]
+    public void RdpClientName_Default_IsNull()
+    {
+        var info = new MachineInfo();
+        Assert.Null(info.RdpClientName);
     }
 
     [Fact]

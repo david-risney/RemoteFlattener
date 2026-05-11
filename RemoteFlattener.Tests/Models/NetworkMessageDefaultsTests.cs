@@ -29,6 +29,7 @@ public class NetworkMessageDefaultsTests
         var msg = new NetworkMessage();
         Assert.Null(msg.MachineName);
         Assert.Null(msg.Hmac);
+        Assert.Null(msg.RdpClientName);
         Assert.Null(msg.OriginMachine);
         Assert.Null(msg.MessageId);
         Assert.Null(msg.TargetMachine);
@@ -79,5 +80,15 @@ public class NetworkMessageDefaultsTests
         var msg = NetworkMessage.Deserialize(json);
         Assert.NotNull(msg);
         Assert.Equal(1, msg!.ProtocolVersion);
+    }
+
+    [Fact]
+    public void Deserialize_MissingRdpClientName_DeserializesAsNull()
+    {
+        // Old peers won't send rdpClientName. It must deserialize as null, not crash.
+        const string json = """{"type":"STATE_UPDATE","machineName":"OLD-PC","isRdpServer":true}""";
+        var msg = NetworkMessage.Deserialize(json);
+        Assert.NotNull(msg);
+        Assert.Null(msg!.RdpClientName);
     }
 }

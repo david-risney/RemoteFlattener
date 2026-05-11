@@ -8,11 +8,16 @@ using RemoteFlattener.VirtualDesktop;
 namespace RemoteFlattener.RDP;
 
 /// <summary>
-/// Finds mstsc.exe (Remote Desktop Connection) windows and determines which
-/// virtual desktop each one lives on, using <see cref="VirtualDesktopProvider.GetDesktopIndexForHwnd"/>.
+/// Finds mstsc.exe (Remote Desktop Connection) and msrdc.exe (Windows App / Cloud DevBox)
+/// windows and determines which virtual desktop each one lives on, using
+/// <see cref="VirtualDesktopProvider.GetDesktopIndexForHwnd"/>.
 ///
 /// mstsc window titles typically look like "MACHINENAME - Remote Desktop Connection"
 /// so we match by checking whether the title contains a known peer machine name.
+///
+/// msrdc window titles are the DevBox/workspace friendly name (e.g. "davris-10")
+/// without a separator.  <see cref="GetMsrdcDesktopMap"/> returns all msrdc windows
+/// without name filtering.
 /// </summary>
 public static class RdpWindowLocator
 {
@@ -28,11 +33,14 @@ public static class RdpWindowLocator
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
     /// <summary>
     /// Returns a mapping from machine name → 1-based virtual desktop index for every
-    /// visible mstsc.exe window whose title contains a known peer machine name.
+    /// visible mstsc.exe or msrdc.exe window whose title contains a known peer machine name.
     /// Returns an empty dictionary if the VirtualDesktop API is unavailable.
     /// </summary>
     public static Dictionary<string, int> GetRdpDesktopMap(IEnumerable<string> knownMachineNames)
@@ -44,7 +52,7 @@ public static class RdpWindowLocator
         var names = new List<string>(knownMachineNames);
         if (names.Count == 0) return result;
 
-        var mstscPids  = GetMstscProcessIds();
+        var rdpPids  = GetRdpClientProcessIds();
         var titleBuf   = new StringBuilder(512);
 
         EnumWindows((hwnd, _) =>
@@ -52,7 +60,7 @@ public static class RdpWindowLocator
             if (!IsWindowVisible(hwnd)) return true;
 
             GetWindowThreadProcessId(hwnd, out var pid);
-            if (!mstscPids.Contains(pid)) return true;
+            if (!rdpPids.Contains(pid)) return true;
 
             titleBuf.Clear();
             GetWindowTextW(hwnd, titleBuf, titleBuf.Capacity);
@@ -72,10 +80,63 @@ public static class RdpWindowLocator
         return result;
     }
 
-    private static HashSet<uint> GetMstscProcessIds()
+    /// <summary>
+    /// Returns a mapping from window title → 1-based virtual desktop index for every
+    /// visible msrdc.exe window with the <c>TscShellContainerClass</c> window class.
+    /// Unlike <see cref="GetRdpDesktopMap"/>, this does not require a list of known
+    /// names — it returns all msrdc windows, allowing the caller to pair them with
+    /// DevBox/AVD peers identified via <see cref="RdpConnectionDetector.GetRdpClientName"/>.
+    /// </summary>
+    public static Dictionary<string, int> GetMsrdcDesktopMap()
+    {
+        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (!VirtualDesktopProvider.IsAvailable) return result;
+
+        var msrdcPids = GetProcessIds("msrdc");
+        if (msrdcPids.Count == 0) return result;
+
+        var titleBuf = new StringBuilder(512);
+        var classBuf = new StringBuilder(256);
+
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd)) return true;
+
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (!msrdcPids.Contains(pid)) return true;
+
+            classBuf.Clear();
+            GetClassNameW(hwnd, classBuf, classBuf.Capacity);
+            if (!classBuf.ToString().Equals("TscShellContainerClass", StringComparison.Ordinal))
+                return true;
+
+            titleBuf.Clear();
+            GetWindowTextW(hwnd, titleBuf, titleBuf.Capacity);
+            var title = titleBuf.ToString();
+            if (string.IsNullOrEmpty(title)) return true;
+
+            var idx = VirtualDesktopProvider.GetDesktopIndexForHwnd(hwnd);
+            if (idx > 0)
+                result[title] = idx;
+
+            return true;
+        }, IntPtr.Zero);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Returns PIDs for mstsc.exe only.  msrdc.exe (Cloud DevBox / AVD) windows
+    /// lack the "HOSTNAME - Remote Desktop Connection" title format that
+    /// <see cref="MatchMachineName"/> requires, so they are handled separately
+    /// by <see cref="GetMsrdcDesktopMap"/>.
+    /// </summary>
+    private static HashSet<uint> GetRdpClientProcessIds() => GetProcessIds("mstsc");
+
+    private static HashSet<uint> GetProcessIds(string processName)
     {
         var set = new HashSet<uint>();
-        foreach (var p in System.Diagnostics.Process.GetProcessesByName("mstsc"))
+        foreach (var p in System.Diagnostics.Process.GetProcessesByName(processName))
         {
             try { set.Add((uint)p.Id); }
             catch { }

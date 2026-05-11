@@ -655,6 +655,7 @@ public partial class MainWindow : Window
         info.IsRdpServer         = msg.IsRdpServer;
         info.IsConnected         = true;
         info.RdpPeers            = msg.RdpPeers            ?? new();
+        info.RdpClientName       = msg.RdpClientName;
         info.RdpHostedServers    = NormalizeRdpHostedServers(msg.RdpHostedServers);
         info.DesktopNames        = msg.DesktopNames        ?? new();
         info.WallpaperThumbnails = msg.WallpaperThumbnails ?? new();
@@ -709,6 +710,78 @@ public partial class MainWindow : Window
             StringComparer.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Builds the local RdpHostedServers map by scanning mstsc windows (hostname-based)
+    /// and msrdc windows (paired with DevBox/AVD peers via <see cref="MachineInfo.RdpClientName"/>).
+    /// </summary>
+    private Dictionary<string, int> BuildLocalRdpHostedServers()
+    {
+        var connectedPeers = _networkManager!.ConnectedPeers.ToList();
+        var map = RdpWindowLocator.GetRdpDesktopMap(connectedPeers);
+        MergeMsrdcDesktopEntries(map, Connections, LocalName);
+        return NormalizeRdpHostedServers(map);
+    }
+
+    /// <summary>
+    /// Pairs msrdc.exe windows (Cloud DevBox / AVD) with server peers that report
+    /// <see cref="MachineInfo.RdpClientName"/> matching <paramref name="localMachineName"/>.
+    /// Matched entries are added to <paramref name="rdpDesktopMap"/> keyed by the
+    /// server's hostname.
+    /// </summary>
+    internal static void MergeMsrdcDesktopEntries(
+        Dictionary<string, int> rdpDesktopMap,
+        IEnumerable<MachineInfo> peers,
+        string localMachineName)
+    {
+        MergeMsrdcDesktopEntries(rdpDesktopMap, peers, localMachineName,
+            RdpWindowLocator.GetMsrdcDesktopMap);
+    }
+
+    /// <summary>
+    /// Testable overload: accepts a factory for the msrdc window map so tests can
+    /// inject known window data without live window enumeration.
+    /// </summary>
+    internal static void MergeMsrdcDesktopEntries(
+        Dictionary<string, int> rdpDesktopMap,
+        IEnumerable<MachineInfo> peers,
+        string localMachineName,
+        Func<Dictionary<string, int>> getMsrdcDesktopMap)
+    {
+        var normalizedLocal = MachineInfo.NormalizeHostname(localMachineName);
+
+        // Find DevBox/AVD peers: server-role peers whose RdpClientName matches us.
+        var devBoxPeers = peers
+            .Where(p => p.IsRdpServer &&
+                        !string.IsNullOrEmpty(p.RdpClientName) &&
+                        MachineInfo.NormalizeHostname(p.RdpClientName!)
+                            .Equals(normalizedLocal, StringComparison.OrdinalIgnoreCase))
+            .Where(p => !rdpDesktopMap.ContainsKey(MachineInfo.NormalizeHostname(p.MachineName)))
+            .ToList();
+
+        if (devBoxPeers.Count == 0) return;
+
+        var msrdcMap = getMsrdcDesktopMap();
+        if (msrdcMap.Count == 0) return;
+
+        // Remove msrdc entries that are already accounted for in the mstsc-based map
+        // (unlikely but defensive).
+        foreach (var existing in rdpDesktopMap.Keys.ToList())
+        {
+            msrdcMap.Remove(existing);
+        }
+
+        if (msrdcMap.Count == 0) return;
+
+        // Pair: if there's exactly one DevBox peer and one unmatched msrdc window,
+        // they must correspond.  With multiple of each, pair by order (best-effort).
+        var msrdcEntries = msrdcMap.ToList();
+        for (int i = 0; i < devBoxPeers.Count && i < msrdcEntries.Count; i++)
+        {
+            var peerName = MachineInfo.NormalizeHostname(devBoxPeers[i].MachineName);
+            rdpDesktopMap[peerName] = msrdcEntries[i].Value;
+        }
+    }
+
     private void BroadcastOurState()
     {
         if (_networkManager == null) return;
@@ -727,9 +800,9 @@ public partial class MainWindow : Window
                 TotalDesktops       = VirtualDesktopHelper.GetTotalDesktopCount(),
                 IsRdpServer         = _isRdpServer,
                 RdpPeers            = _networkManager.ConnectedPeers.ToList(),
+                RdpClientName       = _isRdpServer ? RdpConnectionDetector.GetRdpClientName() : null,
                 RdpHostedServers    = _isRdpServer ? null
-                    : NormalizeRdpHostedServers(
-                        RdpWindowLocator.GetRdpDesktopMap(_networkManager.ConnectedPeers.ToList())),
+                    : BuildLocalRdpHostedServers(),
                 DesktopNames        = apiDesktops.Select(d => d.DisplayName).ToList(),
                 WallpaperThumbnails = apiDesktops.Select(d => EncodeWallpaperThumbnail(d.WallpaperPath) ?? "").ToList()
             };

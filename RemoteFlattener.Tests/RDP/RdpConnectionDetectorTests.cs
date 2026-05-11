@@ -216,4 +216,36 @@ public class RdpConnectionDetectorTests
         Assert.Equal("REMOTE", peer.MachineName);
         Assert.Equal("10.0.0.2", peer.ConnectionAddress);
     }
+
+    // ── GetClientNameFallbackPeers ────────────────────────────────────────
+
+    [Fact]
+    public void GetClientNameFallbackPeers_NotRemoteSession_ReturnsEmpty()
+    {
+        // In a non-remote test environment, GetRdpClientName() returns null
+        // so the fallback path is never reached regardless of the resolver.
+        var entry = new IPHostEntry { AddressList = [IPAddress.Parse("192.168.1.100")] };
+        var result = RdpConnectionDetector.GetClientNameFallbackPeers(
+            "SELF", _ => entry);
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void GetClientNameFallbackPeers_SelfName_ReturnsEmpty()
+    {
+        // Even if CLIENTNAME were "SELF", it should be filtered out.
+        var result = RdpConnectionDetector.GetClientNameFallbackPeers(
+            "SELF", _ => throw new Exception("should not be called"));
+        Assert.Empty(result);
+    }
+
+    // ── GetRdpClientName ──────────────────────────────────────────────────
+
+    [Fact]
+    public void GetRdpClientName_NonRemoteSession_ReturnsNull()
+    {
+        // In a normal (non-remote) test environment, GetRdpClientName must
+        // return null because SM_REMOTESESSION is not set.
+        Assert.Null(RdpConnectionDetector.GetRdpClientName());
+    }
 }

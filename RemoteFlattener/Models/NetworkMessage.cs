@@ -33,6 +33,16 @@ public class NetworkMessage
     public List<string>? RdpPeers { get; set; }
 
     /// <summary>
+    /// Sent by RDP-server machines in remote sessions (e.g. Cloud DevBox).
+    /// Contains the <c>CLIENTNAME</c> environment variable — the hostname of the
+    /// machine running the RDP client (mstsc/msrdc) that is connected to this server.
+    /// Allows the client to identify this peer as "my DevBox" when port-3389 TCP
+    /// scanning is unavailable (WebRTC transport).
+    /// </summary>
+    [JsonPropertyName("rdpClientName")]
+    public string? RdpClientName { get; set; }
+
+    /// <summary>
     /// Sent by RDP-client machines only.  Maps server machine name → the local desktop index
     /// on which that server's mstsc window lives.  Allows every node in the mesh to place
     /// servers under the correct desktop row in the Network Tree, not just the client itself.

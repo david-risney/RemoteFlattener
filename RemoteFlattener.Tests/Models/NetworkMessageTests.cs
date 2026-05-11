@@ -83,6 +83,7 @@ public class NetworkMessageTests
         Assert.Null(restored.MachineName);
         Assert.Null(restored.Hmac);
         Assert.Null(restored.RdpPeers);
+        Assert.Null(restored.RdpClientName);
         Assert.Null(restored.DesktopNames);
         Assert.Null(restored.TargetMachine);
         Assert.Null(restored.MessageId);
@@ -101,6 +102,32 @@ public class NetworkMessageTests
         Assert.NotNull(restored.RdpHostedServers);
         Assert.Equal(2, restored.RdpHostedServers["SERVER1"]);
         Assert.Equal(3, restored.RdpHostedServers["SERVER2"]);
+    }
+
+    [Fact]
+    public void RoundTrip_RdpClientName()
+    {
+        var original = new NetworkMessage
+        {
+            Type          = MessageTypes.StateUpdate,
+            RdpClientName = "DAVRIS-10"
+        };
+        var restored = Roundtrip(original);
+
+        Assert.Equal("DAVRIS-10", restored.RdpClientName);
+    }
+
+    [Fact]
+    public void RoundTrip_RdpClientName_Null()
+    {
+        var original = new NetworkMessage
+        {
+            Type          = MessageTypes.StateUpdate,
+            RdpClientName = null
+        };
+        var restored = Roundtrip(original);
+
+        Assert.Null(restored.RdpClientName);
     }
 
     // ── Deserialize edge cases ────────────────────────────────────────────

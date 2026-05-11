@@ -147,11 +147,12 @@ public partial class TreeWindow : Window
 
         bool dirty = false;
 
-        // Check mstsc window → virtual desktop mapping (no event exists for this).
+        // Check mstsc/msrdc window → virtual desktop mapping (no event exists for this).
         if (!_localIsRdpServer)
         {
             var allNames = _peers.Select(p => MachineInfo.NormalizeHostname(p.MachineName)).ToList();
             var currentMap = RdpWindowLocator.GetRdpDesktopMap(allNames);
+            MainWindow.MergeMsrdcDesktopEntries(currentMap, _peers, _localMachineName);
             if (!RdpDesktopMapEquals(_rdpDesktopMap, currentMap))
                 dirty = true;
         }
@@ -252,6 +253,9 @@ public partial class TreeWindow : Window
         {
             localRdpMap = RdpWindowLocator.GetRdpDesktopMap(
                 allMachineNames.Select(MachineInfo.NormalizeHostname).ToList());
+            // Merge msrdc (Cloud DevBox / AVD) windows by pairing them with peers
+            // that report RdpClientName matching our local machine name.
+            MainWindow.MergeMsrdcDesktopEntries(localRdpMap, _peers, _localMachineName);
             localMachineInfo.RdpHostedServers = new Dictionary<string, int>(
                 localRdpMap.ToDictionary(
                     kv => MachineInfo.NormalizeHostname(kv.Key),

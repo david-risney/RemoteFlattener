@@ -18,6 +18,8 @@ public record RdpPeer(string MachineName, string ConnectionAddress);
 /// On an RDP server the client's address appears as the remote end of an established
 /// inbound connection on port 3389.  On an RDP client the server's address appears as
 /// the remote end of an outbound connection to port 3389.
+/// Falls back to the <c>CLIENTNAME</c> environment variable when no port-3389
+/// connections are found (e.g. Cloud DevBox / AVD with WebRTC transport).
 /// </summary>
 public static class RdpConnectionDetector
 {
@@ -27,14 +29,24 @@ public static class RdpConnectionDetector
     /// Returns each active RDP peer as an <see cref="RdpPeer"/> containing both the
     /// resolved short machine name (for display/dedup) and the raw IP address string
     /// (for the TCP connection — guaranteed reachable because the RDP session uses it).
+    /// When no port-3389 peers are found on a remote session (e.g. Cloud DevBox),
+    /// falls back to the <c>CLIENTNAME</c> environment variable.
     /// </summary>
     public static IReadOnlyList<RdpPeer> GetRdpPeers()
     {
         var localHostname = Environment.MachineName;
         var addresses = ExtractRdpAddresses(
             IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections());
-        return ResolveToRdpPeers(addresses, localHostname,
+        var peers = ResolveToRdpPeers(addresses, localHostname,
             addr => Dns.GetHostEntry(addr).HostName);
+
+        if (peers.Count == 0)
+        {
+            var fallback = GetClientNameFallbackPeers(localHostname);
+            if (fallback.Count > 0) return fallback;
+        }
+
+        return peers;
     }
 
     /// <summary>
@@ -126,5 +138,55 @@ public static class RdpConnectionDetector
                 results.Add(hostname);
         }
         return results;
+    }
+
+    /// <summary>
+    /// Returns the value of the <c>CLIENTNAME</c> environment variable (normalized)
+    /// when running inside a remote session, or <see langword="null"/> otherwise.
+    /// On Cloud DevBox / AVD sessions that use WebRTC transport, this is the only
+    /// way to discover the RDP client machine name.
+    /// </summary>
+    public static string? GetRdpClientName()
+    {
+        if (!RdpRoleDetector.IsRemoteSession()) return null;
+        var clientName = Environment.GetEnvironmentVariable("CLIENTNAME");
+        if (string.IsNullOrWhiteSpace(clientName)) return null;
+        return MachineInfo.NormalizeHostname(clientName);
+    }
+
+    /// <summary>
+    /// Discovers RDP peers via the <c>CLIENTNAME</c> environment variable when
+    /// port-3389 scanning finds nothing (Cloud DevBox / AVD with WebRTC transport).
+    /// The CLIENTNAME is DNS-resolved to obtain a connection address.
+    /// </summary>
+    internal static IReadOnlyList<RdpPeer> GetClientNameFallbackPeers(string localHostname)
+    {
+        return GetClientNameFallbackPeers(localHostname,
+            name => Dns.GetHostEntry(name));
+    }
+
+    /// <summary>
+    /// Testable overload that accepts a custom DNS resolver.
+    /// </summary>
+    internal static IReadOnlyList<RdpPeer> GetClientNameFallbackPeers(
+        string localHostname,
+        Func<string, IPHostEntry> resolveHost)
+    {
+        var clientName = GetRdpClientName();
+        if (clientName == null) return Array.Empty<RdpPeer>();
+        if (clientName.Equals(localHostname, StringComparison.OrdinalIgnoreCase))
+            return Array.Empty<RdpPeer>();
+
+        try
+        {
+            var entry = resolveHost(clientName);
+            var addr = entry.AddressList.FirstOrDefault();
+            if (addr != null)
+                return new[] { new RdpPeer(clientName, addr.ToString()) };
+        }
+        catch { }
+
+        // DNS failed — can't determine connection address.
+        return Array.Empty<RdpPeer>();
     }
 }

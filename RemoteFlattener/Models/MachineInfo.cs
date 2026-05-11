@@ -62,6 +62,19 @@ public class MachineInfo : INotifyPropertyChanged
         set { _rdpPeers = value; OnPropertyChanged(); }
     }
 
+    private string? _rdpClientName;
+
+    /// <summary>
+    /// The <c>CLIENTNAME</c> reported by this machine when it is an RDP server.
+    /// Identifies the RDP client machine (e.g. the physical host running msrdc/mstsc).
+    /// Only populated for remote-session peers (Cloud DevBox, AVD, etc.).
+    /// </summary>
+    public string? RdpClientName
+    {
+        get => _rdpClientName;
+        set { _rdpClientName = value; OnPropertyChanged(); }
+    }
+
     private Dictionary<string, int> _rdpHostedServers = new();
 
     /// <summary>
