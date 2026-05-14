@@ -85,6 +85,10 @@ public partial class TreeWindow : Window
     // Cached on each BuildTree call so DesktopRowsFor() (now an instance method) can access it.
     private VirtualDesktopProvider.DesktopInfo[] _localApiDesktops = Array.Empty<VirtualDesktopProvider.DesktopInfo>();
 
+    // Tracks which monitor the overlay is currently displayed on so we can
+    // detect when the cursor moves to a different monitor and reposition.
+    private IntPtr _currentMonitor;
+
     /// <summary>Unified per-desktop row data used for both local and remote machines.</summary>
     private sealed record DesktopRow(
         int     Index,
@@ -150,19 +154,10 @@ public partial class TreeWindow : Window
     /// </summary>
     private void PositionOnActiveMonitor()
     {
-        var foreground = GetForegroundWindow();
-        var hMonitor = foreground != IntPtr.Zero
-            ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
-            : IntPtr.Zero;
-
-        // Foreground window may be null / on a different desktop — use cursor.
-        if (hMonitor == IntPtr.Zero || foreground == IntPtr.Zero)
-        {
-            if (GetCursorPos(out var pt))
-                hMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-        }
-
+        var hMonitor = GetActiveMonitor();
         if (hMonitor == IntPtr.Zero) return;
+
+        _currentMonitor = hMonitor;
 
         var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
         if (!GetMonitorInfo(hMonitor, ref mi))
@@ -178,6 +173,26 @@ public partial class TreeWindow : Window
         Top    = mi.rcMonitor.Top    * dpiScaleY;
         Width  = (mi.rcMonitor.Right  - mi.rcMonitor.Left) * dpiScaleX;
         Height = (mi.rcMonitor.Bottom - mi.rcMonitor.Top)  * dpiScaleY;
+    }
+
+    /// <summary>
+    /// Returns the monitor handle for the user's current context: foreground
+    /// window first, then cursor position as fallback.
+    /// </summary>
+    private IntPtr GetActiveMonitor()
+    {
+        var foreground = GetForegroundWindow();
+        var hMonitor = foreground != IntPtr.Zero
+            ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
+            : IntPtr.Zero;
+
+        if (hMonitor == IntPtr.Zero || foreground == IntPtr.Zero)
+        {
+            if (GetCursorPos(out var pt))
+                hMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        }
+
+        return hMonitor;
     }
 
     protected override void OnClosed(EventArgs e)
@@ -241,6 +256,14 @@ public partial class TreeWindow : Window
 
         if (dirty)
             ScheduleRefresh();
+
+        // Move the overlay to follow the cursor if the user moved to a different monitor.
+        if (IsLoaded && _currentMonitor != IntPtr.Zero)
+        {
+            var newMonitor = GetActiveMonitor();
+            if (newMonitor != IntPtr.Zero && newMonitor != _currentMonitor)
+                PositionOnActiveMonitor();
+        }
     }
 
     private static bool RdpDesktopMapEquals(
@@ -295,6 +318,11 @@ public partial class TreeWindow : Window
             _navIndex = Math.Clamp(prevIndex < 0 ? 0 : prevIndex, 0, _navItems.Count - 1);
             ApplyNavHighlight();
         }
+
+        // Re-position on every refresh so the overlay follows the user when
+        // they switch virtual desktops or move focus to a different monitor.
+        if (IsLoaded)
+            PositionOnActiveMonitor();
     }
 
     private void BuildTree()
