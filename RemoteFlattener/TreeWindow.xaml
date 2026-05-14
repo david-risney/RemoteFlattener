@@ -9,7 +9,6 @@
         ShowInTaskbar="False"
         SizeToContent="WidthAndHeight"
         PreviewKeyDown="Window_KeyDown"
-        Deactivated="Window_Deactivated"
         Focusable="True">
     <Border x:Name="ContentPanel"
             MinWidth="500" MaxWidth="740" MaxHeight="900"

@@ -562,6 +562,7 @@ public partial class MainWindow : Window
                     OpenSettings);
                 _treeWindow.Closed += (_, _) => _treeWindow = null;
                 _treeWindow.Show();
+                _treeWindow.Activate();
             }
         });
     }

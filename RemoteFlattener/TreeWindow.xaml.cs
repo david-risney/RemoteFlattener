@@ -793,6 +793,17 @@ public partial class TreeWindow : Window
         Close();
     }
 
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+        // Hook the close-on-deactivate only after the window has been
+        // activated for the first time. This avoids a race where the
+        // Deactivated event fires before the window ever gains focus
+        // (e.g. during a Win+Tab hotkey transition).
+        Deactivated -= Window_Deactivated;
+        Deactivated += Window_Deactivated;
+    }
+
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         switch (e.Key)
