@@ -32,6 +32,15 @@ public partial class TreeWindow : Window
     [DllImport("user32.dll")]
     private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
     private const uint MONITOR_DEFAULTTONEAREST = 2;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -134,14 +143,26 @@ public partial class TreeWindow : Window
     }
 
     /// <summary>
-    /// Positions and sizes this window to cover the monitor that contains the
-    /// current foreground window.  This ensures the Desktop Map overlay appears
-    /// on the same screen the user is actively using.
+    /// Positions and sizes this window to cover the monitor that the user is
+    /// actively using.  Prefers the monitor containing the foreground window;
+    /// falls back to the monitor under the mouse cursor (handles empty desktops
+    /// where no window has focus).
     /// </summary>
     private void PositionOnActiveMonitor()
     {
         var foreground = GetForegroundWindow();
-        var hMonitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
+        var hMonitor = foreground != IntPtr.Zero
+            ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
+            : IntPtr.Zero;
+
+        // Foreground window may be null / on a different desktop — use cursor.
+        if (hMonitor == IntPtr.Zero || foreground == IntPtr.Zero)
+        {
+            if (GetCursorPos(out var pt))
+                hMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        }
+
+        if (hMonitor == IntPtr.Zero) return;
 
         var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
         if (!GetMonitorInfo(hMonitor, ref mi))
