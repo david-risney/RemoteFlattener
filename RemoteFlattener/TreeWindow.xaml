@@ -4,7 +4,7 @@
         Title="RemoteFlattener – Desktop Map"
         WindowStyle="None"
         AllowsTransparency="True"
-        Background="#B4000000"
+        Background="Transparent"
         Topmost="True"
         ShowInTaskbar="False"
         WindowState="Normal"
