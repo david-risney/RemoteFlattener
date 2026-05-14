@@ -5,9 +5,9 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -21,6 +21,33 @@ namespace RemoteFlattener;
 
 public partial class TreeWindow : Window
 {
+    // ── Win32 interop for multi-monitor positioning ───────────────────────────
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    // ── Fields ───────────────────────────────────────────────────────────────
+
     private readonly Action<string>                    _onTaskViewRequested;
     private readonly Action<string, int>               _onSwitchToDesktop;
     private readonly Action                            _onSettingsRequested;
@@ -28,8 +55,8 @@ public partial class TreeWindow : Window
     private readonly string _localMachineName;
     private readonly bool   _localIsRdpServer;
 
-    // Flat ordered list of every navigable row (machine header or desktop row) + its primary button.
-    private readonly List<(TreeViewItem Item, Button Button)> _navItems = new();
+    // Flat ordered list of every navigable row (machine header or desktop row) + its action.
+    private readonly List<(TreeViewItem Item, Action Action)> _navItems = new();
     private int _navIndex = -1;
 
     // Debounce rapid back-to-back state changes into a single redraw.
@@ -102,7 +129,34 @@ public partial class TreeWindow : Window
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
+        PositionOnActiveMonitor();
         Keyboard.Focus(this);
+    }
+
+    /// <summary>
+    /// Positions and sizes this window to cover the monitor that contains the
+    /// current foreground window.  This ensures the Desktop Map overlay appears
+    /// on the same screen the user is actively using.
+    /// </summary>
+    private void PositionOnActiveMonitor()
+    {
+        var foreground = GetForegroundWindow();
+        var hMonitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
+
+        var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(hMonitor, ref mi))
+            return;
+
+        // Use the full monitor area (not work area) to cover taskbar, matching
+        // the old Maximized behavior.
+        var source = PresentationSource.FromVisual(this);
+        double dpiScaleX = source?.CompositionTarget?.TransformFromDevice.M11 ?? 1.0;
+        double dpiScaleY = source?.CompositionTarget?.TransformFromDevice.M22 ?? 1.0;
+
+        Left   = mi.rcMonitor.Left   * dpiScaleX;
+        Top    = mi.rcMonitor.Top    * dpiScaleY;
+        Width  = (mi.rcMonitor.Right  - mi.rcMonitor.Left) * dpiScaleX;
+        Height = (mi.rcMonitor.Bottom - mi.rcMonitor.Top)  * dpiScaleY;
     }
 
     protected override void OnClosed(EventArgs e)
@@ -357,57 +411,14 @@ public partial class TreeWindow : Window
 
     // ── Item factories ────────────────────────────────────────────────────────
 
-    // Shared rounded-corner style for all inline action buttons. Built once, frozen, reused.
-    private static readonly Style _btnStyle = BuildButtonStyle();
+    private static readonly System.Windows.Media.Brush _hoverBrush = CreateFrozenBrush(Color.FromArgb(30, 255, 255, 255));
+    private static SolidColorBrush CreateFrozenBrush(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
 
-    private static Style BuildButtonStyle()
+    /// <summary>Adds a subtle background highlight on mouse hover to a row panel.</summary>
+    private static void AddHoverEffect(System.Windows.Controls.Panel panel)
     {
-        var template = new ControlTemplate(typeof(Button));
-        var border   = new FrameworkElementFactory(typeof(Border));
-        border.Name  = "bd";
-        border.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
-        border.SetBinding(Border.BackgroundProperty, new Binding
-        {
-            Path           = new PropertyPath(Button.BackgroundProperty),
-            RelativeSource = RelativeSource.TemplatedParent
-        });
-        border.SetBinding(Border.PaddingProperty, new Binding
-        {
-            Path           = new PropertyPath(Control.PaddingProperty),
-            RelativeSource = RelativeSource.TemplatedParent
-        });
-        var cp = new FrameworkElementFactory(typeof(ContentPresenter));
-        cp.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-        cp.SetValue(FrameworkElement.VerticalAlignmentProperty,   VerticalAlignment.Center);
-        border.AppendChild(cp);
-        template.VisualTree = border;
-
-        var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
-        hover.Setters.Add(new Setter(Border.BackgroundProperty,
-            new SolidColorBrush(Color.FromArgb(75, 255, 255, 255)), "bd"));
-        template.Triggers.Add(hover);
-
-        var pressed = new Trigger { Property = Button.IsPressedProperty, Value = true };
-        pressed.Setters.Add(new Setter(Border.BackgroundProperty,
-            new SolidColorBrush(Color.FromArgb(100, 255, 255, 255)), "bd"));
-        template.Triggers.Add(pressed);
-
-        var disabled = new Trigger { Property = UIElement.IsEnabledProperty, Value = false };
-        disabled.Setters.Add(new Setter(Border.BackgroundProperty,
-            new SolidColorBrush(Color.FromArgb(15, 255, 255, 255)), "bd"));
-        template.Triggers.Add(disabled);
-
-        var style = new Style(typeof(Button));
-        style.Setters.Add(new Setter(Control.TemplateProperty,                   template));
-        style.Setters.Add(new Setter(FrameworkElement.CursorProperty,            Cursors.Hand));
-        style.Setters.Add(new Setter(Control.FontFamilyProperty,                 new FontFamily("Segoe UI")));
-        style.Setters.Add(new Setter(Control.FontSizeProperty,                   11.0));
-        style.Setters.Add(new Setter(Control.ForegroundProperty,                 Brushes.White));
-        style.Setters.Add(new Setter(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center));
-        style.Setters.Add(new Setter(Control.VerticalContentAlignmentProperty,   VerticalAlignment.Center));
-        style.Setters.Add(new Setter(FrameworkElement.FocusVisualStyleProperty,  null));
-        style.Seal();
-        return style;
+        panel.MouseEnter += (_, _) => panel.Background = _hoverBrush;
+        panel.MouseLeave += (_, _) => panel.Background = Brushes.Transparent;
     }
 
     private TreeViewItem MakeMachineItem(MachineInfo info, bool isLocal, bool indent = false)
@@ -459,15 +470,23 @@ public partial class TreeWindow : Window
         leftStack.Children.Add(topRow);
         leftStack.Children.Add(subtitleBlock);
 
-        var taskViewBtn = MakeTaskViewButton(info.MachineName);
-
-        var header = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 5, 0, 5) };
-        DockPanel.SetDock(taskViewBtn, Dock.Right);
-        header.Children.Add(taskViewBtn);
+        var header = new DockPanel
+        {
+            LastChildFill = true,
+            Margin        = new Thickness(0, 5, 0, 5),
+            Cursor        = Cursors.Hand,
+            Background    = Brushes.Transparent  // ensures entire area is hit-testable
+        };
         header.Children.Add(leftStack);
 
+        // Clicking anywhere on the machine row triggers Task View.
+        var machineName = info.MachineName;
+        Action action = () => _onTaskViewRequested(machineName);
+        header.MouseLeftButtonDown += (_, e) => { action(); e.Handled = true; };
+        AddHoverEffect(header);
+
         var item = new TreeViewItem { Header = header, IsExpanded = true };
-        _navItems.Add((item, taskViewBtn));
+        _navItems.Add((item, action));
         return item;
     }
 
@@ -653,11 +672,11 @@ public partial class TreeWindow : Window
         var desktopIndex = d.Index;
         var machineName  = d.MachineName;
         var isLocal      = d.IsLocal;
-        var switchBtn    = MakeActionButton("Switch");
-        switchBtn.IsEnabled  = !d.IsCurrent;
-        switchBtn.MouseDown += (_, e) => e.Handled = true;
-        switchBtn.Click     += (_, _) =>
+        var isCurrent    = d.IsCurrent;
+
+        Action action = () =>
         {
+            if (isCurrent) return;
             // If this desktop belongs to a remote server, also switch the local machine
             // to whichever desktop hosts that server's mstsc window.
             if (!isLocal && _rdpDesktopMap.TryGetValue(MachineInfo.NormalizeHostname(machineName), out var localIdx))
@@ -665,14 +684,23 @@ public partial class TreeWindow : Window
             _onSwitchToDesktop(machineName, desktopIndex);
         };
 
-        var row = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 3, 0, 3) };
-        DockPanel.SetDock(switchBtn, Dock.Right);
-        row.Children.Add(switchBtn);
+        var row = new DockPanel
+        {
+            LastChildFill = true,
+            Margin        = new Thickness(0, 3, 0, 3),
+            Cursor        = isCurrent ? null : Cursors.Hand,
+            Background    = Brushes.Transparent  // ensures entire area is hit-testable
+        };
         row.Children.Add(thumbnail);
         row.Children.Add(textStack);
 
+        // Clicking anywhere on the row switches to that desktop.
+        row.MouseLeftButtonDown += (_, e) => { action(); e.Handled = true; };
+        if (!isCurrent)
+            AddHoverEffect(row);
+
         var item = new TreeViewItem { Header = row, IsExpanded = false };
-        _navItems.Add((item, switchBtn));
+        _navItems.Add((item, action));
         return item;
     }
 
@@ -701,24 +729,6 @@ public partial class TreeWindow : Window
         return bmp;
     }
 
-    private Button MakeTaskViewButton(string machineName)
-    {
-        var btn = MakeActionButton("Task View");
-        btn.Click     += (_, _) => _onTaskViewRequested(machineName);
-        btn.MouseDown += (_, e) => e.Handled = true;
-        return btn;
-    }
-
-    private static Button MakeActionButton(string label) =>
-        new Button
-        {
-            Content         = label,
-            Style           = _btnStyle,
-            Background      = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
-            Padding         = new Thickness(12, 5, 12, 5),
-            Margin          = new Thickness(8, 0, 0, 0),
-            BorderThickness = new Thickness(0)
-        };
     // ── Close / keyboard ─────────────────────────────────────────────────────
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
@@ -772,9 +782,7 @@ public partial class TreeWindow : Window
             case Key.Enter:
                 if (_navIndex >= 0 && _navIndex < _navItems.Count)
                 {
-                    var btn = _navItems[_navIndex].Button;
-                    if (btn.IsEnabled)
-                        btn.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    _navItems[_navIndex].Action();
                     e.Handled = true;
                 }
                 break;

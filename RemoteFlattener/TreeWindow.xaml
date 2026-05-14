@@ -7,7 +7,7 @@
         Background="#B4000000"
         Topmost="True"
         ShowInTaskbar="False"
-        WindowState="Maximized"
+        WindowState="Normal"
         MouseDown="Window_MouseDown"
         PreviewKeyDown="Window_KeyDown"
         Focusable="True">
