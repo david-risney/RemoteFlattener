@@ -163,16 +163,18 @@ public partial class TreeWindow : Window
         if (!GetMonitorInfo(hMonitor, ref mi))
             return;
 
-        // Use the full monitor area (not work area) to cover taskbar, matching
-        // the old Maximized behavior.
         var source = PresentationSource.FromVisual(this);
         double dpiScaleX = source?.CompositionTarget?.TransformFromDevice.M11 ?? 1.0;
         double dpiScaleY = source?.CompositionTarget?.TransformFromDevice.M22 ?? 1.0;
 
-        Left   = mi.rcMonitor.Left   * dpiScaleX;
-        Top    = mi.rcMonitor.Top    * dpiScaleY;
-        Width  = (mi.rcMonitor.Right  - mi.rcMonitor.Left) * dpiScaleX;
-        Height = (mi.rcMonitor.Bottom - mi.rcMonitor.Top)  * dpiScaleY;
+        double monLeft   = mi.rcMonitor.Left   * dpiScaleX;
+        double monTop    = mi.rcMonitor.Top    * dpiScaleY;
+        double monWidth  = (mi.rcMonitor.Right  - mi.rcMonitor.Left) * dpiScaleX;
+        double monHeight = (mi.rcMonitor.Bottom - mi.rcMonitor.Top)  * dpiScaleY;
+
+        // Center the window on the active monitor.
+        Left = monLeft + (monWidth  - ActualWidth)  / 2;
+        Top  = monTop  + (monHeight - ActualHeight) / 2;
     }
 
     /// <summary>
@@ -786,15 +788,8 @@ public partial class TreeWindow : Window
         _onSettingsRequested();
     }
 
-    private void Window_MouseDown(object sender, MouseButtonEventArgs e)
+    private void Window_Deactivated(object? sender, EventArgs e)
     {
-        var src = e.OriginalSource as DependencyObject;
-        while (src != null && src != this)
-        {
-            if (src is Border b && b.Name == "ContentPanel")
-                return;
-            src = VisualTreeHelper.GetParent(src);
-        }
         Close();
     }
 

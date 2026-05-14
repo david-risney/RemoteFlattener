@@ -7,26 +7,21 @@
         Background="Transparent"
         Topmost="True"
         ShowInTaskbar="False"
-        WindowState="Normal"
-        MouseDown="Window_MouseDown"
+        SizeToContent="WidthAndHeight"
         PreviewKeyDown="Window_KeyDown"
+        Deactivated="Window_Deactivated"
         Focusable="True">
-    <Grid>
-        <Rectangle Fill="Transparent"/>
-
-        <Border x:Name="ContentPanel"
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                MinWidth="500" MaxWidth="740" MaxHeight="900"
-                Background="#F01E1E2E"
-                BorderBrush="#22FFFFFF"
-                BorderThickness="1"
-                CornerRadius="12"
-                ClipToBounds="True">
-            <Border.Effect>
-                <DropShadowEffect ShadowDepth="0" BlurRadius="48" Opacity="0.75" Color="Black"/>
-            </Border.Effect>
-            <DockPanel>
+    <Border x:Name="ContentPanel"
+            MinWidth="500" MaxWidth="740" MaxHeight="900"
+            Background="#F01E1E2E"
+            BorderBrush="#22FFFFFF"
+            BorderThickness="1"
+            CornerRadius="12"
+            ClipToBounds="True">
+        <Border.Effect>
+            <DropShadowEffect ShadowDepth="0" BlurRadius="48" Opacity="0.75" Color="Black"/>
+        </Border.Effect>
+        <DockPanel>
 
                 <!-- ── Header ── -->
                 <Border DockPanel.Dock="Top" Background="#11111C" Padding="20,14,12,14">
@@ -123,5 +118,4 @@
 
             </DockPanel>
         </Border>
-    </Grid>
 </Window>
