@@ -791,12 +791,17 @@ public partial class TreeWindow : Window
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        _closing = true;
         Close();
         _onSettingsRequested();
     }
 
+    private bool _closing;
+
     private void Window_Deactivated(object? sender, EventArgs e)
     {
+        if (_closing) return;
+        _closing = true;
         Close();
     }
 
@@ -816,6 +821,7 @@ public partial class TreeWindow : Window
         switch (e.Key)
         {
             case Key.Escape:
+                _closing = true;
                 Close();
                 break;
 
