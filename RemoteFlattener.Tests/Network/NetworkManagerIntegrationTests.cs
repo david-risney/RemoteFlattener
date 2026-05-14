@@ -1188,4 +1188,113 @@ public class NetworkManagerIntegrationTests : IDisposable
         await WaitForAsync(() => nodeA.ConnectedPeers.Contains("NODE-B"), TimeSpan.FromSeconds(5),
             "A still healthy after rapid connect/disconnect");
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TCP keep-alive & disconnect cleanup
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task Disconnect_PeerDisconnectedEvent_FiresWhenRemoteStops()
+    {
+        // Verifies the basic plumbing that TCP close → PeerDisconnected event.
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var disconnectedNames = new ConcurrentBag<string>();
+        nodeA.PeerDisconnected += name => disconnectedNames.Add(name);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "initial connect");
+
+        // Stop B — A should detect and fire PeerDisconnected.
+        nodeB.Stop();
+        await WaitForAsync(() => disconnectedNames.Count > 0, TimeSpan.FromSeconds(5), "disconnect detected");
+
+        Assert.Contains("NODE-B", disconnectedNames);
+        Assert.DoesNotContain("NODE-B", nodeA.ConnectedPeers);
+    }
+
+    [Fact]
+    public async Task Disconnect_PeerVanishes_ConnectedPeersIsEmpty()
+    {
+        // After the only peer disconnects, ConnectedPeers should be empty.
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        nodeB.Stop();
+        nodeB.Dispose();
+        _nodes.Remove(nodeB);
+
+        await WaitForAsync(() => !nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "no peers remain");
+        Assert.Empty(nodeA.ConnectedPeers);
+    }
+
+    [Fact]
+    public async Task BroadcastDuringDisconnect_DoesNotThrow()
+    {
+        // Verifies the SendLineAsync hardening: broadcasting while a peer
+        // is concurrently disposing should not throw ObjectDisposedException.
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        // Stop B and immediately broadcast from A — should not throw.
+        nodeB.Stop();
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                await nodeA.BroadcastAsync(new NetworkMessage
+                {
+                    Type = MessageTypes.StateUpdate,
+                    CurrentDesktop = i
+                });
+                await Task.Delay(10);
+            }
+        });
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task Disconnect_ThreeNodeMesh_SurvivingPeersRemainConnected()
+    {
+        // A <-> B, A <-> C.  When B disconnects, A and C should remain connected.
+        int portA = GetFreePort(), portB = GetFreePort(), portC = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+        var nodeC = CreateNode("NODE-C", portC);
+
+        nodeA.Start("pw", Array.Empty<(string, string, int)>());
+        nodeB.Start("pw", new[] { ("NODE-A", "127.0.0.1", portA) });
+        nodeC.Start("pw", new[] { ("NODE-A", "127.0.0.1", portA) });
+
+        await WaitForAsync(
+            () => nodeA.ConnectedPeers.Count() >= 2,
+            TimeSpan.FromSeconds(5),
+            "A connected to B and C");
+
+        // Kill B.
+        nodeB.Stop();
+        nodeB.Dispose();
+        _nodes.Remove(nodeB);
+
+        await WaitForAsync(
+            () => !nodeA.ConnectedPeers.Contains("NODE-B"),
+            TimeSpan.FromSeconds(5),
+            "A detects B disconnect");
+
+        // C should still be connected.
+        Assert.Contains("NODE-C", nodeA.ConnectedPeers);
+    }
 }
