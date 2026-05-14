@@ -44,6 +44,9 @@ public sealed class NetworkManager : IDisposable
     /// </summary>
     public const int ProtocolVersion = 1;
 
+    /// <summary>TCP keep-alive interval in seconds.  Detects dead peers (e.g. laptop sleep).</summary>
+    private const int KeepAliveSeconds = 15;
+
     private readonly NetworkManagerConfig _config;
     private readonly INetworkLogger _logger;
 
@@ -195,14 +198,22 @@ public sealed class NetworkManager : IDisposable
 
     private static async Task SendLineAsync(PeerConnection conn, string json)
     {
-        await conn.WriteLock.WaitAsync();
+        try
+        {
+            await conn.WriteLock.WaitAsync();
+        }
+        catch (ObjectDisposedException) { return; }
         try
         {
             await conn.Writer.WriteAsync(json);
             await conn.Writer.FlushAsync();
         }
         catch { /* Peer may have disconnected; will be noticed on next read */ }
-        finally { conn.WriteLock.Release(); }
+        finally
+        {
+            try { conn.WriteLock.Release(); }
+            catch (ObjectDisposedException) { }
+        }
     }
 
     // ── Listener (incoming) ──────────────────────────────────────────────────
@@ -363,6 +374,9 @@ public sealed class NetworkManager : IDisposable
                 await writer.FlushAsync();
             }
 
+            // Enable TCP keep-alive so dead peers (e.g. laptop sleep) are detected promptly.
+            EnableKeepAlive(client);
+
             // Register connection; drop duplicate (first-in wins).
             var conn = new PeerConnection { MachineName = remoteMachine, Client = client, Writer = writer };
             if (!_connections.TryAdd(remoteMachine, conn))
@@ -488,6 +502,17 @@ public sealed class NetworkManager : IDisposable
     {
         var expected = ComputeHmac(machineName);
         return string.Equals(expected, provided, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ── TCP keep-alive ──────────────────────────────────────────────────────
+
+    private static void EnableKeepAlive(TcpClient client)
+    {
+        client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        // Time before first probe, interval between probes, and max failed probes.
+        client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, KeepAliveSeconds);
+        client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, KeepAliveSeconds);
+        client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
     }
 
     // ── Utility ──────────────────────────────────────────────────────────────

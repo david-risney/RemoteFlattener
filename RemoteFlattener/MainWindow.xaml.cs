@@ -531,9 +531,42 @@ public partial class MainWindow : Window
         {
             var info = FindPeer(machineName);
             if (info != null)
-                info.IsConnected = false;
+            {
+                info.IsConnected      = false;
+                info.RdpPeers         = new();
+                info.RdpHostedServers = new();
+                info.RdpClientName    = null;
+            }
+
+            // Re-evaluate IsIndirect for all peers: a peer should only be
+            // indirect if some still-connected peer lists it in its RdpPeers.
+            RecalculateIndirectPeers();
             RefreshStatusLabel();
         });
+    }
+
+    /// <summary>
+    /// Recomputes <see cref="MachineInfo.IsIndirect"/> for every peer based on
+    /// the RdpPeers lists of currently-connected peers only.  Peers that were
+    /// only reachable through a now-disconnected node become invisible.
+    /// </summary>
+    private void RecalculateIndirectPeers()
+    {
+        var indirectNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var peer in Connections.Where(p => p.IsConnected))
+            foreach (var rp in peer.RdpPeers)
+                if (!string.IsNullOrWhiteSpace(rp))
+                    indirectNames.Add(MachineInfo.NormalizeHostname(rp));
+
+        // Remove self from the set — we are never "indirect" to ourselves.
+        indirectNames.Remove(MachineInfo.NormalizeHostname(LocalName));
+
+        foreach (var peer in Connections)
+        {
+            // Never mark a directly-connected peer as indirect.
+            peer.IsIndirect = !peer.IsConnected && indirectNames.Contains(
+                MachineInfo.NormalizeHostname(peer.MachineName));
+        }
     }
 
     // ── Hotkey callbacks (may arrive on thread pool) ──────────────────────────
@@ -791,6 +824,11 @@ public partial class MainWindow : Window
         Dispatcher.InvokeAsync(() =>
         {
             if (_networkManager == null) return;
+
+            // Re-evaluate RDP role each cycle so the tree updates when a
+            // remote-desktop session ends (e.g. the client laptop goes offline).
+            _isRdpServer = RdpRoleDetector.IsRemoteSession();
+
             var apiDesktops = VirtualDesktopProvider.GetAllDesktops();
             var msg = new NetworkMessage
             {
