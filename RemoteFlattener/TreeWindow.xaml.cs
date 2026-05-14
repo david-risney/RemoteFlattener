@@ -233,11 +233,6 @@ public partial class TreeWindow : Window
             TotalDesktops  = 0
         };
 
-        var all = new List<MachineInfo> { localMachineInfo };
-        // Only include peers that are reachable: directly connected, known via the mesh,
-        // or RDP servers (which are reached through a client, not directly).
-        all.AddRange(_peers.Where(p => p.IsConnected || p.IsIndirect || p.IsRdpServer));
-
         var localApiDesktops = VirtualDesktopProvider.GetAllDesktops();
         _localApiDesktops    = localApiDesktops;   // cache for GetDesktopRowsFor()
         _cachedDesktopCount     = localApiDesktops.Length;
@@ -267,6 +262,14 @@ public partial class TreeWindow : Window
             localRdpMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         }
         _rdpDesktopMap = localRdpMap;
+
+        // Only include peers that are reachable: directly connected, known via the
+        // mesh (IsIndirect), or RDP servers the local machine is actively hosting
+        // an mstsc/msrdc window for.
+        var all = new List<MachineInfo> { localMachineInfo };
+        all.AddRange(_peers.Where(p => p.IsConnected || p.IsIndirect ||
+            (p.IsRdpServer && localMachineInfo.RdpHostedServers.ContainsKey(
+                MachineInfo.NormalizeHostname(p.MachineName)))));
 
         DesktopRow[] DesktopRowsFor(MachineInfo m) => GetDesktopRowsFor(m);
 
@@ -499,10 +502,9 @@ public partial class TreeWindow : Window
         return rows;
     }
 
-    /// <summary>
     /// Adds desktop rows to <paramref name="clientItem"/> and, for each desktop,
     /// nests any server whose mstsc window lives there according to the client's
-    /// <see cref="MachineInfo.RdpHostedServers"/> map.  Works identically whether
+    /// <see cref="MachineInfo.RdpHostedServers"/> map.Works identically whether
     /// the client is the local machine or a remote peer — both carry the same map.
     /// <paramref name="localServerNode"/> is non-null when we are the server: it is
     /// the pre-built local-machine node that should be nested on the correct desktop.
