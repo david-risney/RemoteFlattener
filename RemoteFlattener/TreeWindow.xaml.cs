@@ -67,6 +67,7 @@ public partial class TreeWindow : Window
     // Flat ordered list of every navigable row (machine header or desktop row) + its action.
     private readonly List<(TreeViewItem Item, Action Action)> _navItems = new();
     private int _navIndex = -1;
+    private int _currentDesktopNavIndex = -1; // index of the local current desktop in _navItems
 
     // Debounce rapid back-to-back state changes into a single redraw.
     private readonly DispatcherTimer _refreshTimer;
@@ -312,12 +313,16 @@ public partial class TreeWindow : Window
         NetworkTree.Items.Clear();
         _navItems.Clear();
         _navIndex = -1;
+        _currentDesktopNavIndex = -1;
 
         BuildTree();
 
         if (_navItems.Count > 0)
         {
-            _navIndex = Math.Clamp(prevIndex < 0 ? 0 : prevIndex, 0, _navItems.Count - 1);
+            // On first open (prevIndex < 0), default to the current desktop row;
+            // on subsequent refreshes, preserve the user's selection.
+            var defaultIndex = _currentDesktopNavIndex >= 0 ? _currentDesktopNavIndex : 0;
+            _navIndex = Math.Clamp(prevIndex < 0 ? defaultIndex : prevIndex, 0, _navItems.Count - 1);
             ApplyNavHighlight();
         }
 
@@ -752,6 +757,8 @@ public partial class TreeWindow : Window
 
         var item = new TreeViewItem { Header = row, IsExpanded = false };
         _navItems.Add((item, action));
+        if (isCurrent && isLocal)
+            _currentDesktopNavIndex = _navItems.Count - 1;
         return item;
     }
 
