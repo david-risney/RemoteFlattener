@@ -96,7 +96,16 @@
                     <TreeView x:Name="NetworkTree"
                               Background="Transparent"
                               BorderThickness="0"
-                              Foreground="White">
+                              Foreground="White"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                              ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                        <TreeView.Template>
+                            <!-- Strip the TreeView's built-in ScrollViewer so mouse-wheel
+                                 events bubble up to the outer ScrollViewer. -->
+                            <ControlTemplate TargetType="TreeView">
+                                <ItemsPresenter/>
+                            </ControlTemplate>
+                        </TreeView.Template>
                         <TreeView.Resources>
                             <Style TargetType="TreeViewItem">
                                 <Setter Property="Foreground"                 Value="White"/>
