@@ -317,6 +317,7 @@ public partial class TreeWindow : Window
         _currentDesktopNavIndex = -1;
 
         BuildTree();
+        CollectNavItems();
 
         if (_navItems.Count > 0)
         {
@@ -334,6 +335,42 @@ public partial class TreeWindow : Window
             UpdateLayout();
             PositionOnActiveMonitor();
         }
+    }
+
+    /// <summary>
+    /// Walks the tree in visual (depth-first) order to build _navItems so that
+    /// keyboard Up/Down matches the on-screen order regardless of creation order.
+    /// </summary>
+    private void CollectNavItems()
+    {
+        foreach (TreeViewItem root in NetworkTree.Items)
+            CollectNavItemsRecursive(root);
+    }
+
+    private void CollectNavItemsRecursive(TreeViewItem item)
+    {
+        Action? action = null;
+        bool isCurrentLocal = false;
+
+        if (item.Tag is Action a)
+        {
+            action = a;
+        }
+        else if (item.Tag is (Action a2, bool current))
+        {
+            action = a2;
+            isCurrentLocal = current;
+        }
+
+        if (action != null)
+        {
+            _navItems.Add((item, action));
+            if (isCurrentLocal)
+                _currentDesktopNavIndex = _navItems.Count - 1;
+        }
+
+        foreach (TreeViewItem child in item.Items)
+            CollectNavItemsRecursive(child);
     }
 
     private void BuildTree()
@@ -545,8 +582,7 @@ public partial class TreeWindow : Window
         header.MouseLeftButtonDown += (_, e) => { action(); e.Handled = true; };
         AddHoverEffect(header);
 
-        var item = new TreeViewItem { Header = header, IsExpanded = true };
-        _navItems.Add((item, action));
+        var item = new TreeViewItem { Header = header, IsExpanded = true, Tag = action };
         return item;
     }
 
@@ -759,10 +795,7 @@ public partial class TreeWindow : Window
         if (!isCurrent)
             AddHoverEffect(row);
 
-        var item = new TreeViewItem { Header = row, IsExpanded = false };
-        _navItems.Add((item, action));
-        if (isCurrent && isLocal)
-            _currentDesktopNavIndex = _navItems.Count - 1;
+        var item = new TreeViewItem { Header = row, IsExpanded = false, Tag = (action, isCurrent && isLocal) };
         return item;
     }
 
