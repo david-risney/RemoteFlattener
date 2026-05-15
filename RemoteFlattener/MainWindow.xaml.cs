@@ -547,7 +547,14 @@ public partial class MainWindow : Window
             if (_treeWindow is { IsVisible: true })
             {
                 AppLogger.Log("Win+Tab: closing overlay.");
-                _treeWindow.Close();
+                try
+                {
+                    _treeWindow.Close();
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Log($"Win+Tab: Close() threw: {ex}");
+                }
                 _treeWindow = null;
             }
             else

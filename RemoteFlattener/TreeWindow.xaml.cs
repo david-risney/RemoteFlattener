@@ -13,6 +13,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using RemoteFlattener.Logging;
 using RemoteFlattener.Models;
 using RemoteFlattener.RDP;
 using RemoteFlattener.VirtualDesktop;
@@ -798,9 +799,20 @@ public partial class TreeWindow : Window
 
     private bool _closing;
 
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        AppLogger.Log("TreeWindow.OnClosing");
+        // Unhook immediately so Deactivated (which fires during Close)
+        // cannot re-enter Close().
+        Deactivated -= Window_Deactivated;
+        _closing = true;
+        base.OnClosing(e);
+    }
+
     private void Window_Deactivated(object? sender, EventArgs e)
     {
         if (_closing) return;
+        AppLogger.Log("TreeWindow: closing on deactivation.");
         _closing = true;
         Close();
     }
