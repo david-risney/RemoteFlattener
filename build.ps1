@@ -170,8 +170,16 @@ switch ($Task) {
             # Do an initial fetch so the first comparison is meaningful.
             git fetch --quiet 2>&1 | Out-Null
 
+            $lastWasNoChange = $false
+
             while ($true) {
-                Write-Host "`n[$(Get-Date -Format 'HH:mm:ss')] Checking for changes..." -ForegroundColor DarkCyan
+                # Overwrite previous "none" line in-place; otherwise start a new line.
+                if ($lastWasNoChange) {
+                    Write-Host "`r`e[2K[$(Get-Date -Format 'HH:mm:ss')] Checking for changes..." -ForegroundColor DarkCyan -NoNewline
+                } else {
+                    Write-Host "`n[$(Get-Date -Format 'HH:mm:ss')] Checking for changes..." -ForegroundColor DarkCyan -NoNewline
+                }
+                $lastWasNoChange = $false
 
                 $rebuilt = $false
 
@@ -180,6 +188,7 @@ switch ($Task) {
                 $behind = [int](git rev-list 'HEAD..@{u}' --count 2>$null)
 
                 if ($behind -gt 0) {
+                    Write-Host ""  # finish the "Checking..." line
                     Write-Host "  $behind new commit(s) upstream – pulling..." -ForegroundColor Cyan
                     git pull
                     if ($LASTEXITCODE -ne 0) {
@@ -207,6 +216,7 @@ switch ($Task) {
                 if (-not $rebuilt) {
                     $latestChange = Get-LatestSourceChange
                     if ($latestChange -and $latestChange -gt $lastBuildTime) {
+                        Write-Host ""  # finish the "Checking..." line
                         Write-Host "  Local change detected (newest file: $($latestChange.ToString('HH:mm:ss'))) – rebuilding..." -ForegroundColor Cyan
                         try {
                             Stop-RemoteFlattener
@@ -225,8 +235,14 @@ switch ($Task) {
 
                 # ── 3. No rebuild – ensure app is still running ──────────────
                 if (-not $rebuilt) {
-                    Write-Host "  No changes." -ForegroundColor DarkGray
-                    Start-RemoteFlattenerIfNotRunning
+                    $running = Get-Process -Name 'RemoteFlattener' -ErrorAction SilentlyContinue
+                    if (-not $running) {
+                        Write-Host ""  # finish the "Checking..." line
+                        Start-RemoteFlattenerIfNotRunning
+                    } else {
+                        Write-Host " none" -ForegroundColor DarkGray -NoNewline
+                        $lastWasNoChange = $true
+                    }
                 }
 
                 Start-Sleep -Seconds $PollSeconds
