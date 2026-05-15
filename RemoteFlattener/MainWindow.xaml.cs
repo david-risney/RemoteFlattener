@@ -17,6 +17,7 @@ using RemoteFlattener.Network;
 using RemoteFlattener.RDP;
 using RemoteFlattener.Settings;
 using RemoteFlattener.VirtualDesktop;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace RemoteFlattener;
@@ -59,6 +60,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DataContext = this;
+
+        EnableDarkTitlebar();
 
         AppLogger.LogWritten += OnLogWritten;
         AppLogger.Log($"RemoteFlattener started.  Local machine: {Environment.MachineName}");
@@ -416,6 +419,25 @@ public partial class MainWindow : Window
         Show();
         WindowState = WindowState.Normal;
         Activate();
+    }
+
+    // ── Dark titlebar ────────────────────────────────────────────────────────
+
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+    private void EnableDarkTitlebar()
+    {
+        // Must be called after InitializeComponent so the HWND exists.
+        var helper = new WindowInteropHelper(this);
+        if (helper.EnsureHandle() != IntPtr.Zero)
+        {
+            int useImmersiveDarkMode = 1;
+            DwmSetWindowAttribute(helper.Handle, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                ref useImmersiveDarkMode, sizeof(int));
+        }
     }
 
     private void OpenLog_Click(object sender, RoutedEventArgs e)
