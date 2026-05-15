@@ -91,6 +91,9 @@
                               Background="Transparent"
                               BorderThickness="0"
                               Foreground="White"
+                              Focusable="False"
+                              KeyboardNavigation.DirectionalNavigation="None"
+                              KeyboardNavigation.TabNavigation="None"
                               ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                               ScrollViewer.VerticalScrollBarVisibility="Disabled">
                         <TreeView.Template>
@@ -109,6 +112,7 @@
                                 <Setter Property="Background"                 Value="Transparent"/>
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                                 <Setter Property="Padding"                    Value="4,0"/>
+                                <Setter Property="Focusable"                  Value="False"/>
                                 <Setter Property="FocusVisualStyle"           Value="{x:Null}"/>
                             </Style>
                         </TreeView.Resources>
