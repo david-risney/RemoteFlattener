@@ -327,10 +327,13 @@ public partial class TreeWindow : Window
             ApplyNavHighlight();
         }
 
-        // Re-position on every refresh so the overlay follows the user when
-        // they switch virtual desktops or move focus to a different monitor.
+        // Re-position after layout so the overlay is centered with its new size.
+        // WPF hasn't measured the new content yet at this point, so defer.
         if (IsLoaded)
+        {
+            UpdateLayout();
             PositionOnActiveMonitor();
+        }
     }
 
     private void BuildTree()
