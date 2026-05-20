@@ -99,6 +99,7 @@ public partial class TreeWindow : Window
         Guid?   Id,            // non-null only for local machine via COM API
         string? WallpaperPath, // local file path
         string? WallpaperData, // base64 JPEG received from remote machine
+        string? BackgroundColor, // hex RGB (e.g. "#1E1E2E") when desktop uses solid colour
         string  MachineName,
         bool    IsLocal
     );
@@ -599,7 +600,7 @@ public partial class TreeWindow : Window
         {
             // Local machine: always use real API data regardless of parent context.
             return _localApiDesktops.Select(d =>
-                new DesktopRow(d.Index, d.DisplayName, d.IsCurrent, d.Id, d.WallpaperPath, null, m.MachineName, true)
+                new DesktopRow(d.Index, d.DisplayName, d.IsCurrent, d.Id, d.WallpaperPath, null, d.BackgroundColor, m.MachineName, true)
             ).ToArray();
         }
         if (m.TotalDesktops <= 0) return Array.Empty<DesktopRow>();
@@ -609,10 +610,12 @@ public partial class TreeWindow : Window
             var name  = i < m.DesktopNames.Count        ? m.DesktopNames[i]        : $"Desktop {i + 1}";
             var thumb = i < m.WallpaperThumbnails.Count ? m.WallpaperThumbnails[i] : null;
             if (string.IsNullOrEmpty(thumb)) thumb = null;
+            var color = i < m.WallpaperColors.Count     ? m.WallpaperColors[i]     : null;
+            if (string.IsNullOrEmpty(color)) color = null;
             // A remote desktop is only "current" (shows Active, Switch disabled) when the
             // parent context is also active — i.e. the full path from root is currently displayed.
             var isCurrent = parentIsActive && m.CurrentDesktop == i + 1;
-            rows[i] = new DesktopRow(i + 1, name, isCurrent, null, null, thumb, m.MachineName, false);
+            rows[i] = new DesktopRow(i + 1, name, isCurrent, null, null, thumb, color, m.MachineName, false);
         }
         return rows;
     }
@@ -709,8 +712,10 @@ public partial class TreeWindow : Window
                 using var ms = new MemoryStream(bytes);
                 bmp = LoadBitmapFromStream(ms);
             }
-            thumbnail = bmp != null
-                ? new Border
+
+            if (bmp != null)
+            {
+                thumbnail = new Border
                 {
                     Width             = 120,
                     Height            = 68,
@@ -726,8 +731,26 @@ public partial class TreeWindow : Window
                         Stretch          = Stretch.UniformToFill,
                         StretchDirection = StretchDirection.Both
                     }
-                }
-                : MakeThumbnailPlaceholder();
+                };
+            }
+            else if (!string.IsNullOrEmpty(d.BackgroundColor) && TryParseHexColor(d.BackgroundColor, out var bgColor))
+            {
+                thumbnail = new Border
+                {
+                    Width             = 120,
+                    Height            = 68,
+                    Background        = new SolidColorBrush(bgColor),
+                    CornerRadius      = new CornerRadius(4),
+                    BorderBrush       = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)),
+                    BorderThickness   = new Thickness(1),
+                    Margin            = new Thickness(0, 0, 12, 0),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+            }
+            else
+            {
+                thumbnail = MakeThumbnailPlaceholder();
+            }
         }
         catch { thumbnail = MakeThumbnailPlaceholder(); }
 
@@ -822,6 +845,22 @@ public partial class TreeWindow : Window
         bmp.EndInit();
         bmp.Freeze();
         return bmp;
+    }
+
+    private static bool TryParseHexColor(string hex, out Color color)
+    {
+        color = default;
+        if (string.IsNullOrEmpty(hex)) return false;
+        if (hex[0] == '#') hex = hex[1..];
+        if (hex.Length != 6) return false;
+        if (byte.TryParse(hex[0..2], System.Globalization.NumberStyles.HexNumber, null, out var r)
+            && byte.TryParse(hex[2..4], System.Globalization.NumberStyles.HexNumber, null, out var g)
+            && byte.TryParse(hex[4..6], System.Globalization.NumberStyles.HexNumber, null, out var b))
+        {
+            color = Color.FromRgb(r, g, b);
+            return true;
+        }
+        return false;
     }
 
     // ── Close / keyboard ─────────────────────────────────────────────────────

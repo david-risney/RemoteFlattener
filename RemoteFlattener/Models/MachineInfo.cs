@@ -104,6 +104,15 @@ public class MachineInfo : INotifyPropertyChanged
         set { _wallpaperThumbnails = value; OnPropertyChanged(); }
     }
 
+    private List<string> _wallpaperColors = new();
+
+    /// <summary>Hex RGB colour string per desktop (e.g. "#1E1E2E"), for solid-colour backgrounds. Empty string = use thumbnail image.</summary>
+    public List<string> WallpaperColors
+    {
+        get => _wallpaperColors;
+        set { _wallpaperColors = value; OnPropertyChanged(); }
+    }
+
     public string DisplayText =>
         $"{(IsRdpServer ? "[SERVER]" : "[CLIENT]")} {MachineName}" +
         $"{(TotalDesktops > 0 ? $" (Desktop {CurrentDesktop}/{TotalDesktops})" : "")}" +

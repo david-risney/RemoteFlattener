@@ -57,6 +57,10 @@ public class NetworkMessage
     [JsonPropertyName("wallpaperThumbnails")]
     public List<string>? WallpaperThumbnails { get; set; }
 
+    /// <summary>Hex RGB colour per desktop (e.g. "#1E1E2E") for solid-colour backgrounds. Empty string = use thumbnail image.</summary>
+    [JsonPropertyName("wallpaperColors")]
+    public List<string>? WallpaperColors { get; set; }
+
     /// <summary>Machine that originally created this message.  Set by the sender; preserved by relays.</summary>
     [JsonPropertyName("originMachine")]
     public string? OriginMachine { get; set; }

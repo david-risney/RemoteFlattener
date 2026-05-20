@@ -92,7 +92,11 @@ public static class VirtualDesktopProvider
     }
 
     /// <summary>Information about a single virtual desktop.</summary>
-    public sealed record DesktopInfo(int Index, string DisplayName, bool IsCurrent, Guid Id, string? WallpaperPath);
+    /// <param name="BackgroundColor">
+    /// When the desktop uses a solid colour background (no wallpaper image),
+    /// this holds the RGB hex string (e.g. "#1E1E2E"). Null when an image is used.
+    /// </param>
+    public sealed record DesktopInfo(int Index, string DisplayName, bool IsCurrent, Guid Id, string? WallpaperPath, string? BackgroundColor);
 
     /// <summary>
     /// Returns all virtual desktops with their 1-based index, display name, and whether
@@ -109,29 +113,58 @@ public static class VirtualDesktopProvider
             // Wallpaper fallback chain (per-desktop path may be empty, registry blank in RDP sessions):
             // 1. Registry Control Panel\Desktop\Wallpaper
             // 2. TranscodedWallpaper — Windows always keeps this file up to date, even in RDP.
+            //
+            // However, when the system background is a solid colour (registry Wallpaper is empty
+            // and no RDP override), we must NOT fall back to TranscodedWallpaper because it may
+            // contain a stale image from a previous wallpaper.  Instead we read the colour from
+            // Control Panel\Colors\Background.
             string? systemWall = null;
+            bool systemHasWallpaperEntry = false;
             try
             {
                 var p = Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "Wallpaper", null) as string;
-                if (!string.IsNullOrEmpty(p) && File.Exists(p)) systemWall = p;
+                systemHasWallpaperEntry = !string.IsNullOrEmpty(p);
+                if (systemHasWallpaperEntry && File.Exists(p)) systemWall = p;
             }
             catch { }
 
-            if (systemWall == null)
+            if (systemWall == null && systemHasWallpaperEntry)
             {
+                // A wallpaper path is configured but the file wasn't found at the registered
+                // location — fall back to TranscodedWallpaper (common in RDP sessions).
                 var transcoded = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                     "Microsoft", "Windows", "Themes", "TranscodedWallpaper");
                 if (File.Exists(transcoded)) systemWall = transcoded;
             }
 
+            // Read the solid-colour background from registry (used when no wallpaper image).
+            string? systemBgColor = ReadBackgroundColor();
+
             var result = new DesktopInfo[desktops.Length];
             for (int i = 0; i < desktops.Length; i++)
             {
                 var d    = desktops[i];
                 var name = string.IsNullOrWhiteSpace(d.Name) ? $"Desktop {i + 1}" : d.Name;
-                var wall = string.IsNullOrEmpty(d.WallpaperPath) ? systemWall : d.WallpaperPath;
-                result[i] = new DesktopInfo(i + 1, name, d.Id == currentId, d.Id, wall);
+
+                string? wall;
+                string? bgColor = null;
+                if (!string.IsNullOrEmpty(d.WallpaperPath))
+                {
+                    wall = d.WallpaperPath;
+                }
+                else if (systemWall != null)
+                {
+                    wall = systemWall;
+                }
+                else
+                {
+                    // No wallpaper image available — use the solid background colour.
+                    wall = null;
+                    bgColor = systemBgColor;
+                }
+
+                result[i] = new DesktopInfo(i + 1, name, d.Id == currentId, d.Id, wall, bgColor);
             }
             return result;
         }
@@ -140,6 +173,29 @@ public static class VirtualDesktopProvider
             MarkUnavailable(ex);
             return Array.Empty<DesktopInfo>();
         }
+    }
+
+    /// <summary>
+    /// Reads the system solid-colour background from the registry.
+    /// Returns an RGB hex string like "#1E1E2E", or null if unreadable.
+    /// </summary>
+    private static string? ReadBackgroundColor()
+    {
+        try
+        {
+            var raw = Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Colors", "Background", null) as string;
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            var parts = raw.Split(' ');
+            if (parts.Length >= 3
+                && byte.TryParse(parts[0], out var r)
+                && byte.TryParse(parts[1], out var g)
+                && byte.TryParse(parts[2], out var b))
+            {
+                return $"#{r:X2}{g:X2}{b:X2}";
+            }
+        }
+        catch { }
+        return null;
     }
 
     // ── Switching ─────────────────────────────────────────────────────────────

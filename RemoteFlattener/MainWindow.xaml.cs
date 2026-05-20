@@ -691,6 +691,7 @@ public partial class MainWindow : Window
         info.RdpHostedServers    = NormalizeRdpHostedServers(msg.RdpHostedServers);
         info.DesktopNames        = msg.DesktopNames        ?? new();
         info.WallpaperThumbnails = msg.WallpaperThumbnails ?? new();
+        info.WallpaperColors     = msg.WallpaperColors     ?? new();
 
         // Ensure every machine the sender knows about appears in our list.
         // We only add entries — we never downgrade a directly-connected peer to offline.
@@ -841,7 +842,8 @@ public partial class MainWindow : Window
                 RdpHostedServers    = _isRdpServer ? null
                     : BuildLocalRdpHostedServers(),
                 DesktopNames        = apiDesktops.Select(d => d.DisplayName).ToList(),
-                WallpaperThumbnails = apiDesktops.Select(d => EncodeWallpaperThumbnail(d.WallpaperPath) ?? "").ToList()
+                WallpaperThumbnails = apiDesktops.Select(d => EncodeWallpaperThumbnail(d.WallpaperPath) ?? "").ToList(),
+                WallpaperColors     = apiDesktops.Select(d => d.BackgroundColor ?? "").ToList()
             };
             _ = _networkManager.BroadcastAsync(msg);
         });
