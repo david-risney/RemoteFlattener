@@ -40,28 +40,68 @@ public class MergeMsrdcDesktopEntriesTests
     }
 
     [Fact]
-    public void DevBoxPeer_MatchesLocalName_MergesEntry()
+    public void Pass1_WindowTitleMatchesMachineName()
     {
+        // Window title "davris-0" matches peer MachineName "DAVRIS-0" directly.
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
         {
-            new()
-            {
-                MachineName = "CPC-DEVBOX-1",
-                IsRdpServer = true,
-                RdpClientName = "MY-PC"
-            }
+            new() { MachineName = "DAVRIS-0", IsRdpServer = true, RdpClientName = "DAVRIS-10" }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("davris-10", 4)));
+            FakeMsrdc(("davris-0", 3)));
 
         Assert.Single(map);
-        Assert.Equal(4, map["CPC-DEVBOX-1"]);
+        Assert.Equal(3, map["DAVRIS-0"]);
     }
 
     [Fact]
-    public void DevBoxPeer_ClientNameDoesNotMatch_NotMerged()
+    public void Pass2_WindowTitleMatchesRdpClientName()
+    {
+        // Window "davris-10" matches peer's RdpClientName="DAVRIS-10".
+        // Peer MachineName is "CPC-DEVBOX-1" which doesn't match the title.
+        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+        var peers = new List<MachineInfo>
+        {
+            new()
+            {
+                MachineName = "CPC-DEVBOX-1",
+                IsRdpServer = true,
+                RdpClientName = "DAVRIS-10"
+            }
+        };
+
+        MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
+            FakeMsrdc(("davris-10", 5)));
+
+        Assert.Single(map);
+        Assert.Equal(5, map["CPC-DEVBOX-1"]);
+    }
+
+    [Fact]
+    public void Pass1PrioritizedOverPass2()
+    {
+        // Two peers: DAVRIS-0 matches by MachineName (pass 1).
+        // CPC-DEVBOX matches by RdpClientName (pass 2).
+        // Both have same RdpClientName but pass 1 should grab the right window.
+        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+        var peers = new List<MachineInfo>
+        {
+            new() { MachineName = "DAVRIS-0", IsRdpServer = true, RdpClientName = "DAVRIS-10" },
+            new() { MachineName = "CPC-DEVBOX-1", IsRdpServer = true, RdpClientName = "DAVRIS-10" }
+        };
+
+        MainWindow.MergeMsrdcDesktopEntries(map, peers, "DAVRIS-4",
+            FakeMsrdc(("davris-0", 2), ("davris-10", 5)));
+
+        Assert.Equal(2, map.Count);
+        Assert.Equal(2, map["DAVRIS-0"]);       // matched by MachineName
+        Assert.Equal(5, map["CPC-DEVBOX-1"]);   // matched by RdpClientName
+    }
+
+    [Fact]
+    public void NoMatchingTitle_PeerNotMerged()
     {
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
@@ -70,12 +110,13 @@ public class MergeMsrdcDesktopEntriesTests
             {
                 MachineName = "CPC-DEVBOX-1",
                 IsRdpServer = true,
-                RdpClientName = "OTHER-PC"
+                RdpClientName = "WORKSPACE-X"
             }
         };
 
+        // Window title doesn't match MachineName or RdpClientName.
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("davris-10", 4)));
+            FakeMsrdc(("unrelated-window", 4)));
         Assert.Empty(map);
     }
 
@@ -92,7 +133,7 @@ public class MergeMsrdcDesktopEntriesTests
             {
                 MachineName = "CPC-DEVBOX-1",
                 IsRdpServer = true,
-                RdpClientName = "MY-PC"
+                RdpClientName = "DAVRIS-10"
             }
         };
 
@@ -114,7 +155,7 @@ public class MergeMsrdcDesktopEntriesTests
             {
                 MachineName = "PEER-A",
                 IsRdpServer = false,
-                RdpClientName = "MY-PC"
+                RdpClientName = "DAVRIS-10"
             }
         };
 
@@ -124,7 +165,7 @@ public class MergeMsrdcDesktopEntriesTests
     }
 
     [Fact]
-    public void ClientNameComparison_IsCaseInsensitive()
+    public void CaseInsensitiveMatching()
     {
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
@@ -133,29 +174,29 @@ public class MergeMsrdcDesktopEntriesTests
             {
                 MachineName = "CPC-DEVBOX-1",
                 IsRdpServer = true,
-                RdpClientName = "my-pc"   // lowercase
+                RdpClientName = "davris-10"   // lowercase
             }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("davris-10", 2)));
+            FakeMsrdc(("DAVRIS-10", 2)));
 
         Assert.Single(map);
         Assert.Equal(2, map["CPC-DEVBOX-1"]);
     }
 
     [Fact]
-    public void MultipleDevBoxPeers_PairedByOrder()
+    public void MultiplePeers_MatchedByTitleCorrectly()
     {
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
         {
-            new() { MachineName = "CPC-DEV-A", IsRdpServer = true, RdpClientName = "MY-PC" },
-            new() { MachineName = "CPC-DEV-B", IsRdpServer = true, RdpClientName = "MY-PC" }
+            new() { MachineName = "CPC-DEV-A", IsRdpServer = true, RdpClientName = "WORKSPACE-A" },
+            new() { MachineName = "CPC-DEV-B", IsRdpServer = true, RdpClientName = "WORKSPACE-B" }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("workspace-1", 1), ("workspace-2", 3)));
+            FakeMsrdc(("workspace-b", 3), ("workspace-a", 1)));
 
         Assert.Equal(2, map.Count);
         Assert.Equal(1, map["CPC-DEV-A"]);
@@ -168,12 +209,12 @@ public class MergeMsrdcDesktopEntriesTests
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
         {
-            new() { MachineName = "CPC-DEV-A", IsRdpServer = true, RdpClientName = "MY-PC" },
-            new() { MachineName = "CPC-DEV-B", IsRdpServer = true, RdpClientName = "MY-PC" }
+            new() { MachineName = "CPC-DEV-A", IsRdpServer = true, RdpClientName = "WORKSPACE-A" },
+            new() { MachineName = "CPC-DEV-B", IsRdpServer = true, RdpClientName = "WORKSPACE-B" }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("workspace-1", 5)));
+            FakeMsrdc(("workspace-a", 5)));
 
         Assert.Single(map);
         Assert.Equal(5, map["CPC-DEV-A"]);
@@ -186,7 +227,7 @@ public class MergeMsrdcDesktopEntriesTests
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
         {
-            new() { MachineName = "CPC-DEVBOX-1", IsRdpServer = true, RdpClientName = "MY-PC" }
+            new() { MachineName = "CPC-DEVBOX-1", IsRdpServer = true, RdpClientName = "DAVRIS-10" }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC", EmptyMsrdc());
@@ -197,15 +238,15 @@ public class MergeMsrdcDesktopEntriesTests
     [Fact]
     public void MsrdcWindowMatchingExistingKey_IsExcluded()
     {
-        // An msrdc window whose title happens to match an existing mstsc entry
-        // should not cause a conflict.
+        // An msrdc window whose title matches an existing mstsc entry key
+        // should be excluded from pairing.
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase)
         {
             ["EXISTING-SERVER"] = 2
         };
         var peers = new List<MachineInfo>
         {
-            new() { MachineName = "CPC-DEVBOX-1", IsRdpServer = true, RdpClientName = "MY-PC" }
+            new() { MachineName = "CPC-DEVBOX-1", IsRdpServer = true, RdpClientName = "WORKSPACE-NEW" }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
@@ -217,7 +258,23 @@ public class MergeMsrdcDesktopEntriesTests
     }
 
     [Fact]
-    public void NullRdpClientName_PeerIsIgnored()
+    public void NullRdpClientName_PeerMatchesByMachineNameOnly()
+    {
+        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+        var peers = new List<MachineInfo>
+        {
+            new() { MachineName = "DAVRIS-0", IsRdpServer = true, RdpClientName = null }
+        };
+
+        // Pass 1 can still match by MachineName.
+        MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
+            FakeMsrdc(("davris-0", 4)));
+        Assert.Single(map);
+        Assert.Equal(4, map["DAVRIS-0"]);
+    }
+
+    [Fact]
+    public void NullRdpClientName_NoMachineNameMatch_NotPaired()
     {
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
@@ -231,54 +288,23 @@ public class MergeMsrdcDesktopEntriesTests
     }
 
     [Fact]
-    public void EmptyRdpClientName_PeerIsIgnored()
-    {
-        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
-        var peers = new List<MachineInfo>
-        {
-            new() { MachineName = "CPC-DEVBOX-1", IsRdpServer = true, RdpClientName = "" }
-        };
-
-        MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("workspace-1", 4)));
-        Assert.Empty(map);
-    }
-
-    [Fact]
     public void MoreWindowsThanPeers_ExtraWindowsIgnored()
     {
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
         {
-            new() { MachineName = "CPC-DEV-A", IsRdpServer = true, RdpClientName = "MY-PC" }
+            new() { MachineName = "CPC-DEV-A", IsRdpServer = true, RdpClientName = "WORKSPACE-A" }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("workspace-1", 1), ("workspace-2", 3), ("workspace-3", 5)));
+            FakeMsrdc(("workspace-a", 1), ("workspace-b", 3), ("workspace-c", 5)));
 
         Assert.Single(map);
         Assert.Equal(1, map["CPC-DEV-A"]);
     }
 
     [Fact]
-    public void FqdnLocalMachineName_StillMatchesPeer()
-    {
-        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
-        var peers = new List<MachineInfo>
-        {
-            new() { MachineName = "CPC-DEVBOX-1", IsRdpServer = true, RdpClientName = "MY-PC" }
-        };
-
-        // localMachineName as FQDN — should normalize to "MY-PC" and match.
-        MainWindow.MergeMsrdcDesktopEntries(map, peers, "my-pc.corp.example.com",
-            FakeMsrdc(("workspace-1", 2)));
-
-        Assert.Single(map);
-        Assert.Equal(2, map["CPC-DEVBOX-1"]);
-    }
-
-    [Fact]
-    public void MixedPeers_OnlyMatchingDevBoxesMerged()
+    public void MixedPeers_OnlyServersWithMatchingTitlesMerged()
     {
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase)
         {
@@ -288,22 +314,21 @@ public class MergeMsrdcDesktopEntriesTests
         {
             // Not a server
             new() { MachineName = "CLIENT-A", IsRdpServer = false, RdpClientName = "MY-PC" },
-            // Server but different client
-            new() { MachineName = "CPC-OTHER", IsRdpServer = true, RdpClientName = "OTHER-PC" },
-            // Server with null client name
-            new() { MachineName = "CPC-NULL", IsRdpServer = true, RdpClientName = null },
+            // Server with matching RdpClientName
+            new() { MachineName = "CPC-MATCH", IsRdpServer = true, RdpClientName = "DAVRIS-10" },
+            // Server with null client name but MachineName matches a window
+            new() { MachineName = "DAVRIS-5", IsRdpServer = true, RdpClientName = null },
             // Already in map
-            new() { MachineName = "MSTSC-SERVER", IsRdpServer = true, RdpClientName = "MY-PC" },
-            // This one should be merged
-            new() { MachineName = "CPC-MATCH", IsRdpServer = true, RdpClientName = "MY-PC" }
+            new() { MachineName = "MSTSC-SERVER", IsRdpServer = true, RdpClientName = "MY-PC" }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("davris-10", 4)));
+            FakeMsrdc(("davris-10", 4), ("davris-5", 6)));
 
-        Assert.Equal(2, map.Count);
+        Assert.Equal(3, map.Count);
         Assert.Equal(1, map["MSTSC-SERVER"]);  // unchanged
-        Assert.Equal(4, map["CPC-MATCH"]);     // the only one that should be merged
+        Assert.Equal(4, map["CPC-MATCH"]);     // matched by RdpClientName (pass 2)
+        Assert.Equal(6, map["DAVRIS-5"]);      // matched by MachineName (pass 1)
     }
 
     [Fact]
@@ -322,46 +347,47 @@ public class MergeMsrdcDesktopEntriesTests
     }
 
     [Fact]
-    public void TitleMatchesRdpClientName_PairsByTitle()
+    public void RealScenario_Davris4Local_CpcAndDavris0Remote()
     {
-        // Scenario: peer CPC-DEVBOX reports RdpClientName="DAVRIS-10" (stale/wrong client)
-        // and the msrdc window is titled "davris-10" (the DevBox friendly name).
-        // Even though local machine is "MY-PC" (not DAVRIS-10), the title-to-RdpClientName
-        // match pairs them correctly.
+        // Real scenario from user: local=DAVRIS-4, peers DAVRIS-0 and CPC-DAVRI-XXS9M
+        // both report RdpClientName=DAVRIS-10. Windows: "davris-0" and "davris-10".
+        // DAVRIS-0 should match by MachineName, CPC should match by RdpClientName.
         var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
         var peers = new List<MachineInfo>
         {
-            new()
-            {
-                MachineName = "CPC-DEVBOX-1",
-                IsRdpServer = true,
-                RdpClientName = "DAVRIS-10"
-            }
+            new() { MachineName = "DAVRIS-0", IsRdpServer = true, RdpClientName = "DAVRIS-10" },
+            new() { MachineName = "CPC-DAVRI-XXS9M", IsRdpServer = true, RdpClientName = "DAVRIS-10" },
+            new() { MachineName = "DAVRIS-1", IsRdpServer = false }
+        };
+
+        MainWindow.MergeMsrdcDesktopEntries(map, peers, "DAVRIS-4",
+            FakeMsrdc(("davris-0", 2), ("davris-10", 5)));
+
+        Assert.Equal(2, map.Count);
+        Assert.Equal(2, map["DAVRIS-0"]);           // pass 1: MachineName match
+        Assert.Equal(5, map["CPC-DAVRI-XXS9M"]);    // pass 2: RdpClientName match
+        Assert.False(map.ContainsKey("DAVRIS-1"));  // not a server, never matched
+    }
+
+    [Fact]
+    public void Pass1WindowNotReusedInPass2()
+    {
+        // If a window is consumed in pass 1, it shouldn't be matched again in pass 2.
+        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+        var peers = new List<MachineInfo>
+        {
+            // This peer's MachineName "DAVRIS-10" matches window "davris-10" in pass 1.
+            new() { MachineName = "DAVRIS-10", IsRdpServer = true, RdpClientName = "SOMETHING" },
+            // This peer's RdpClientName "DAVRIS-10" also matches window "davris-10"
+            // but it should NOT get it because pass 1 already claimed it.
+            new() { MachineName = "CPC-OTHER", IsRdpServer = true, RdpClientName = "DAVRIS-10" }
         };
 
         MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
             FakeMsrdc(("davris-10", 5)));
 
         Assert.Single(map);
-        Assert.Equal(5, map["CPC-DEVBOX-1"]);
-    }
-
-    [Fact]
-    public void TitleMatchesRdpClientName_MultiplePeers_PairedCorrectly()
-    {
-        // Two DevBox peers with different RdpClientNames; msrdc windows match by title.
-        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
-        var peers = new List<MachineInfo>
-        {
-            new() { MachineName = "CPC-DEV-A", IsRdpServer = true, RdpClientName = "WORKSPACE-A" },
-            new() { MachineName = "CPC-DEV-B", IsRdpServer = true, RdpClientName = "WORKSPACE-B" }
-        };
-
-        MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
-            FakeMsrdc(("workspace-b", 3), ("workspace-a", 1)));
-
-        Assert.Equal(2, map.Count);
-        Assert.Equal(1, map["CPC-DEV-A"]);
-        Assert.Equal(3, map["CPC-DEV-B"]);
+        Assert.Equal(5, map["DAVRIS-10"]);         // pass 1 claimed it
+        Assert.False(map.ContainsKey("CPC-OTHER")); // no remaining window to match
     }
 }

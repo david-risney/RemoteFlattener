@@ -401,22 +401,8 @@ public partial class TreeWindow : Window
             localRdpMap = RdpWindowLocator.GetRdpDesktopMap(
                 allMachineNames.Select(MachineInfo.NormalizeHostname).ToList());
             // Merge msrdc (Cloud DevBox / AVD) windows by pairing them with peers
-            // that report RdpClientName matching our local machine name.
+            // via MachineName match, RdpClientName match, or DNS/IP resolution.
             MainWindow.MergeMsrdcDesktopEntries(localRdpMap, _peers, _localMachineName);
-
-            // Fallback: scan msrdc (Windows App) windows by title for any peers still
-            // not in the map.  This handles the case where msrdc is used instead of
-            // mstsc and the RdpClientName doesn't match the local machine name.
-            var unmappedNames = allMachineNames
-                .Select(MachineInfo.NormalizeHostname)
-                .Where(n => !localRdpMap.ContainsKey(n))
-                .ToList();
-            if (unmappedNames.Count > 0)
-            {
-                var msrdcByName = RdpWindowLocator.GetMsrdcDesktopMapByName(unmappedNames);
-                foreach (var kv in msrdcByName)
-                    localRdpMap[kv.Key] = kv.Value;
-            }
 
             localMachineInfo.RdpHostedServers = new Dictionary<string, int>(
                 localRdpMap.ToDictionary(

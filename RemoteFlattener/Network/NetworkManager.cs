@@ -96,6 +96,26 @@ public sealed class NetworkManager : IDisposable
     public IEnumerable<string> ConnectedPeers =>
         _connections.Values.Select(c => c.MachineName);
 
+    /// <summary>
+    /// Returns a mapping of normalized peer machine name → remote IP address string
+    /// for all currently connected peers.
+    /// </summary>
+    public Dictionary<string, string> GetPeerAddresses()
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var conn in _connections.Values)
+        {
+            try
+            {
+                var ep = conn.Client.Client.RemoteEndPoint as System.Net.IPEndPoint;
+                if (ep != null)
+                    result[conn.MachineName] = ep.Address.ToString();
+            }
+            catch { /* socket may be closed */ }
+        }
+        return result;
+    }
+
     /// <summary>Raised when a message arrives from a peer (on a background thread).</summary>
     public event Action<string, NetworkMessage>? MessageReceived;
     /// <summary>Raised when a peer finishes authenticating (on a background thread).</summary>
