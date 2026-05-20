@@ -688,6 +688,7 @@ public partial class MainWindow : Window
         info.IsConnected         = true;
         info.RdpPeers            = msg.RdpPeers            ?? new();
         info.RdpClientName       = msg.RdpClientName;
+        info.DevBoxFriendlyName  = msg.DevBoxFriendlyName;
         info.RdpHostedServers    = NormalizeRdpHostedServers(msg.RdpHostedServers);
         info.DesktopNames        = msg.DesktopNames        ?? new();
         info.WallpaperThumbnails = msg.WallpaperThumbnails ?? new();
@@ -745,8 +746,9 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Builds the local RdpHostedServers map by scanning mstsc windows (hostname-based)
-    /// and msrdc windows (paired with DevBox/AVD peers via <see cref="MachineInfo.RdpClientName"/>).
-    /// Falls back to title-based msrdc matching for peers not found by the first two methods.
+    /// and msrdc windows (paired with DevBox/AVD peers via <see cref="MachineInfo.DevBoxFriendlyName"/>
+    /// or <see cref="MachineInfo.RdpClientName"/>).
+    /// Falls back to DNS/IP-based msrdc matching for peers not found by earlier passes.
     /// </summary>
     private Dictionary<string, int> BuildLocalRdpHostedServers()
     {
@@ -761,8 +763,9 @@ public partial class MainWindow : Window
     /// Pairs msrdc.exe windows (Cloud DevBox / AVD) with RDP server peers.
     /// Multi-pass matching (case-insensitive):
     /// 1. Match window titles directly against peer MachineName (short hostname).
-    /// 2. Match window titles against peer RdpClientName (DevBox friendly name).
+    /// 2. Match window titles against peer DevBoxFriendlyName (Cloud DevBox display name).
     /// 3. Resolve window title via DNS and match resulting IP against known peer IPs.
+    /// 4. Map window → process PID → TCP connections → match destination IPs against peer IPs.
     /// </summary>
     internal static void MergeMsrdcDesktopEntries(
         Dictionary<string, int> rdpDesktopMap,
@@ -775,7 +778,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Test-friendly overload without peer addresses or DNS resolution (passes 1 &amp; 2 only).
+    /// Test-friendly overload without peer addresses or DNS resolution (passes 1–3 only).
     /// </summary>
     internal static void MergeMsrdcDesktopEntries(
         Dictionary<string, int> rdpDesktopMap,
@@ -788,7 +791,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Convenience overload using live msrdc scanning with no peer address info (passes 1 &amp; 2 only).
+    /// Convenience overload using live msrdc scanning with no peer address info (passes 1–3 only).
     /// </summary>
     internal static void MergeMsrdcDesktopEntries(
         Dictionary<string, int> rdpDesktopMap,
@@ -809,6 +812,24 @@ public partial class MainWindow : Window
         Dictionary<string, string> peerAddresses,
         Func<Dictionary<string, int>> getMsrdcDesktopMap,
         Func<string, string?> resolveToIp)
+    {
+        MergeMsrdcDesktopEntries(rdpDesktopMap, peers, localMachineName, peerAddresses,
+            getMsrdcDesktopMap, resolveToIp,
+            RdpWindowLocator.GetMsrdcWindowPids, RdpWindowLocator.GetTcpConnectionsByPids);
+    }
+
+    /// <summary>
+    /// Fully testable overload: accepts all injectable dependencies.
+    /// </summary>
+    internal static void MergeMsrdcDesktopEntries(
+        Dictionary<string, int> rdpDesktopMap,
+        IEnumerable<MachineInfo> peers,
+        string localMachineName,
+        Dictionary<string, string> peerAddresses,
+        Func<Dictionary<string, int>> getMsrdcDesktopMap,
+        Func<string, string?> resolveToIp,
+        Func<Dictionary<string, uint>> getWindowPids,
+        Func<IEnumerable<uint>, Dictionary<uint, List<string>>> getTcpByPids)
     {
         // Find RDP-server peers not already accounted for in the mstsc-based map.
         var serverPeers = peers
@@ -855,33 +876,32 @@ public partial class MainWindow : Window
             }
         }
 
-        // Pass 2: Match window titles against peer RdpClientName, but ONLY when
-        // the match is unambiguous (exactly one unmatched peer has that RdpClientName).
-        // When multiple peers share the same RdpClientName (e.g. both DAVRIS-0 and
-        // CPC-DAVRI-XXS9M report RdpClientName="DAVRIS-10"), skip and let Pass 3
-        // (DNS/IP) disambiguate.
-        var unmatchedServerPeers = serverPeers
+        // Pass 2: Match window titles against peer DevBoxFriendlyName.
+        // This is the primary matching strategy for Cloud DevBoxes — the msrdc window
+        // title shows the friendly name (e.g. "davris-10"), and the DevBox reports its
+        // friendly name from the Agent config. Ambiguity-guarded like Pass 3.
+        var unmatchedDevBoxPeers = serverPeers
             .Where(p => !pairedPeers.Contains(MachineInfo.NormalizeHostname(p.MachineName))
-                        && !string.IsNullOrEmpty(p.RdpClientName))
+                        && !string.IsNullOrEmpty(p.DevBoxFriendlyName))
             .ToList();
 
-        // Group by normalized RdpClientName to find unique vs ambiguous matches.
-        var byClientName = unmatchedServerPeers
-            .GroupBy(p => MachineInfo.NormalizeHostname(p.RdpClientName!), StringComparer.OrdinalIgnoreCase)
-            .Where(g => g.Count() == 1)  // Only unambiguous matches
+        // Group by normalized friendly name — skip if multiple peers claim the same name.
+        var byFriendlyName = unmatchedDevBoxPeers
+            .GroupBy(p => MachineInfo.NormalizeHostname(p.DevBoxFriendlyName!), StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() == 1)
             .ToDictionary(g => g.Key, g => g.Single(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var kv in msrdcMap)
         {
             if (pairedWindows.Contains(kv.Key)) continue;
             var normalizedTitle = MachineInfo.NormalizeHostname(kv.Key);
-            if (byClientName.TryGetValue(normalizedTitle, out var peer))
+            if (byFriendlyName.TryGetValue(normalizedTitle, out var peer))
             {
                 var normalizedPeerName = MachineInfo.NormalizeHostname(peer.MachineName);
                 rdpDesktopMap[normalizedPeerName] = kv.Value;
                 pairedWindows.Add(kv.Key);
                 pairedPeers.Add(normalizedPeerName);
-                AppLogger.Log($"MergeMsrdc: paired '{peer.MachineName}' with msrdc window '{kv.Key}' (RdpClientName '{peer.RdpClientName}' match) → desktop{kv.Value}");
+                AppLogger.Log($"MergeMsrdc: paired '{peer.MachineName}' with msrdc window '{kv.Key}' (DevBoxFriendlyName '{peer.DevBoxFriendlyName}' match) → desktop{kv.Value}");
             }
         }
 
@@ -912,6 +932,54 @@ public partial class MainWindow : Window
                     pairedPeers.Add(matchedPeerName);
                     ipToPeer.Remove(resolvedIp);
                     AppLogger.Log($"MergeMsrdc: paired '{matchedPeerName}' with msrdc window '{kv.Key}' (DNS→IP '{resolvedIp}' match) → desktop{kv.Value}");
+                }
+            }
+        }
+
+        // Pass 4: Process network connections — map unpaired msrdc windows to their
+        // owning process's TCP connections, then match destination IPs against peer IPs.
+        var remainingWindows = msrdcMap.Keys.Where(k => !pairedWindows.Contains(k)).ToList();
+        if (remainingWindows.Count > 0 && peerAddresses.Count > 0)
+        {
+            var windowPids = getWindowPids();
+            var relevantPids = remainingWindows
+                .Where(w => windowPids.ContainsKey(w))
+                .Select(w => windowPids[w])
+                .Distinct()
+                .ToList();
+
+            if (relevantPids.Count > 0)
+            {
+                var tcpByPid = getTcpByPids(relevantPids);
+
+                // Build reverse map: IP → peer MachineName (unmatched peers only).
+                var ipToPeerP4 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var peer in serverPeers)
+                {
+                    var normalizedPeerName = MachineInfo.NormalizeHostname(peer.MachineName);
+                    if (pairedPeers.Contains(normalizedPeerName)) continue;
+                    if (peerAddresses.TryGetValue(peer.MachineName, out var peerIp))
+                        ipToPeerP4.TryAdd(peerIp, normalizedPeerName);
+                }
+
+                foreach (var windowTitle in remainingWindows)
+                {
+                    if (pairedWindows.Contains(windowTitle)) continue;
+                    if (!windowPids.TryGetValue(windowTitle, out var pid)) continue;
+                    if (!tcpByPid.TryGetValue(pid, out var remoteIps)) continue;
+
+                    foreach (var remoteIp in remoteIps)
+                    {
+                        if (ipToPeerP4.TryGetValue(remoteIp, out var matchedPeerName))
+                        {
+                            rdpDesktopMap[matchedPeerName] = msrdcMap[windowTitle];
+                            pairedWindows.Add(windowTitle);
+                            pairedPeers.Add(matchedPeerName);
+                            ipToPeerP4.Remove(remoteIp);
+                            AppLogger.Log($"MergeMsrdc: paired '{matchedPeerName}' with msrdc window '{windowTitle}' (process PID {pid} TCP→IP '{remoteIp}' match) → desktop{msrdcMap[windowTitle]}");
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -961,6 +1029,7 @@ public partial class MainWindow : Window
                 IsRdpServer         = _isRdpServer,
                 RdpPeers            = _networkManager.ConnectedPeers.ToList(),
                 RdpClientName       = _isRdpServer ? RdpConnectionDetector.GetRdpClientName() : null,
+                DevBoxFriendlyName  = _isRdpServer ? RDP.DevBoxInfoProvider.GetDevBoxFriendlyName() : null,
                 RdpHostedServers    = _isRdpServer ? null
                     : BuildLocalRdpHostedServers(),
                 DesktopNames        = apiDesktops.Select(d => d.DisplayName).ToList(),

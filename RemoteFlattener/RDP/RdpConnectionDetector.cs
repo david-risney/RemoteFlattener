@@ -41,10 +41,20 @@ public static class RdpConnectionDetector
         var peers = ResolveToRdpPeers(addresses, localHostname,
             addr => Dns.GetHostEntry(addr).HostName);
 
-        if (peers.Count == 0)
+        // Also check CLIENTNAME (WebRTC/DevBox sessions have no port-3389 connection).
+        // Merge with port-3389 results rather than treating as fallback-only.
+        var clientNamePeers = GetClientNameFallbackPeers(localHostname);
+        if (clientNamePeers.Count > 0)
         {
-            var fallback = GetClientNameFallbackPeers(localHostname);
-            if (fallback.Count > 0) return fallback;
+            var existing = new HashSet<string>(
+                peers.Select(p => p.MachineName), StringComparer.OrdinalIgnoreCase);
+            var merged = new List<RdpPeer>(peers);
+            foreach (var p in clientNamePeers)
+            {
+                if (!existing.Contains(p.MachineName))
+                    merged.Add(p);
+            }
+            return merged;
         }
 
         return peers;

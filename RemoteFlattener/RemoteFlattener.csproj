@@ -8,7 +8,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>RemoteFlattener</AssemblyName>
     <RootNamespace>RemoteFlattener</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
   <ItemGroup>

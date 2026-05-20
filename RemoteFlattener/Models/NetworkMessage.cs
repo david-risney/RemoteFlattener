@@ -43,6 +43,15 @@ public class NetworkMessage
     public string? RdpClientName { get; set; }
 
     /// <summary>
+    /// The user-assigned friendly name of this Cloud DevBox (e.g. "davris-10").
+    /// Extracted from the DevBox Agent configuration on the server side.
+    /// The client uses this to match msrdc window titles (which display the friendly
+    /// name rather than the machine hostname).
+    /// </summary>
+    [JsonPropertyName("devBoxFriendlyName")]
+    public string? DevBoxFriendlyName { get; set; }
+
+    /// <summary>
     /// Sent by RDP-client machines only.  Maps server machine name → the local desktop index
     /// on which that server's mstsc window lives.  Allows every node in the mesh to place
     /// servers under the correct desktop row in the Network Tree, not just the client itself.

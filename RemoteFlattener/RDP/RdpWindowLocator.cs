@@ -268,6 +268,115 @@ public static class RdpWindowLocator
     }
 
     /// <summary>
+    /// Returns a mapping from msrdc window title → process ID for every visible
+    /// msrdc <c>TscShellContainerClass</c> window. Used by Pass 4 to correlate
+    /// windows with their process's active network connections.
+    /// </summary>
+    public static Dictionary<string, uint> GetMsrdcWindowPids()
+    {
+        var result = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        var msrdcPids = GetProcessIds("msrdc");
+        if (msrdcPids.Count == 0) return result;
+
+        var titleBuf = new StringBuilder(512);
+        var classBuf = new StringBuilder(256);
+
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd)) return true;
+
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (!msrdcPids.Contains(pid)) return true;
+
+            classBuf.Clear();
+            GetClassNameW(hwnd, classBuf, classBuf.Capacity);
+            if (!classBuf.ToString().Equals("TscShellContainerClass", StringComparison.Ordinal))
+                return true;
+
+            titleBuf.Clear();
+            GetWindowTextW(hwnd, titleBuf, titleBuf.Capacity);
+            var title = titleBuf.ToString();
+            if (!string.IsNullOrEmpty(title))
+                result.TryAdd(title, pid);
+
+            return true;
+        }, IntPtr.Zero);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Returns the remote IP addresses of all established TCP connections owned by
+    /// the specified process IDs. Uses <c>GetExtendedTcpTable</c> with per-process
+    /// ownership information.
+    /// </summary>
+    public static Dictionary<uint, List<string>> GetTcpConnectionsByPids(IEnumerable<uint> pids)
+    {
+        var pidSet = new HashSet<uint>(pids);
+        var result = new Dictionary<uint, List<string>>();
+        foreach (var pid in pidSet)
+            result[pid] = new List<string>();
+
+        try
+        {
+            // First call to get buffer size
+            uint size = 0;
+            GetExtendedTcpTable(IntPtr.Zero, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+            var buffer = Marshal.AllocHGlobal((int)size);
+            try
+            {
+                if (GetExtendedTcpTable(buffer, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) != 0)
+                    return result;
+
+                int numEntries = Marshal.ReadInt32(buffer);
+                var rowPtr = buffer + 4;
+                int rowSize = Marshal.SizeOf<MIB_TCPROW_OWNER_PID>();
+
+                for (int i = 0; i < numEntries; i++)
+                {
+                    var row = Marshal.PtrToStructure<MIB_TCPROW_OWNER_PID>(rowPtr + (i * rowSize));
+                    if (row.dwState != 5) continue; // 5 = ESTABLISHED
+                    if (!pidSet.Contains(row.dwOwningPid)) continue;
+
+                    var remoteIp = new System.Net.IPAddress(row.dwRemoteAddr);
+                    if (System.Net.IPAddress.IsLoopback(remoteIp)) continue;
+
+                    result[row.dwOwningPid].Add(remoteIp.ToString());
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"RdpWindowLocator: GetTcpConnectionsByPids error: {ex.Message}");
+        }
+
+        return result;
+    }
+
+    private const int AF_INET = 2;
+    private const int TCP_TABLE_OWNER_PID_ALL = 5;
+
+    [DllImport("iphlpapi.dll", SetLastError = true)]
+    private static extern uint GetExtendedTcpTable(
+        IntPtr pTcpTable, ref uint pdwSize, bool bOrder,
+        int ulAf, int TableClass, uint Reserved);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MIB_TCPROW_OWNER_PID
+    {
+        public uint dwState;
+        public uint dwLocalAddr;
+        public uint dwLocalPort;
+        public uint dwRemoteAddr;
+        public uint dwRemotePort;
+        public uint dwOwningPid;
+    }
+
+    /// <summary>
     /// Returns the first name from <paramref name="names"/> whose short hostname
     /// (first DNS label) matches the hostname portion of <paramref name="windowTitle"/>,
     /// or <see langword="null"/> if none match.

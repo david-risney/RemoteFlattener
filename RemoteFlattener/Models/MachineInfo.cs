@@ -75,6 +75,20 @@ public class MachineInfo : INotifyPropertyChanged
         set { _rdpClientName = value; OnPropertyChanged(); }
     }
 
+    private string? _devBoxFriendlyName;
+
+    /// <summary>
+    /// The user-assigned friendly name of this Cloud DevBox (e.g. "davris-10").
+    /// Read from the DevBox Agent config. Used to match msrdc window titles on the
+    /// client, since msrdc shows the friendly name rather than the machine hostname.
+    /// Only populated for DevBox peers.
+    /// </summary>
+    public string? DevBoxFriendlyName
+    {
+        get => _devBoxFriendlyName;
+        set { _devBoxFriendlyName = value; OnPropertyChanged(); }
+    }
+
     private Dictionary<string, int> _rdpHostedServers = new();
 
     /// <summary>
