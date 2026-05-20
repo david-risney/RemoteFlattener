@@ -421,13 +421,23 @@ public partial class TreeWindow : Window
         else
             AppLogger.Log($"BuildTree: hostedMap is EMPTY — no mstsc/msrdc windows found for peers [{string.Join(", ", allMachineNames)}]");
 
-        // Only include peers that are reachable: directly connected, known via the
-        // mesh (IsIndirect), or RDP servers the local machine is actively hosting
-        // an mstsc/msrdc window for.
+        // Only include peers that are part of the desktop map:
+        // - RDP servers the local machine is hosting an mstsc/msrdc window for
+        // - Client peers that host servers we know about
+        // - When we're a server: the client peer that hosts us
+        // Exclude peers that are merely connected but have no RDP relationship.
         var all = new List<MachineInfo> { localMachineInfo };
-        all.AddRange(_peers.Where(p => p.IsConnected || p.IsIndirect ||
+        all.AddRange(_peers.Where(p =>
+            // Server peers that appear in our local RDP hosted map
             (p.IsRdpServer && localMachineInfo.RdpHostedServers.ContainsKey(
-                MachineInfo.NormalizeHostname(p.MachineName)))));
+                MachineInfo.NormalizeHostname(p.MachineName))) ||
+            // Client peers that host at least one server (including us when we're a server)
+            (!p.IsRdpServer && p.RdpHostedServers.Count > 0) ||
+            // When we're a server: any client peer that lists us in RdpPeers
+            (_localIsRdpServer && !p.IsRdpServer && p.RdpPeers.Any(rp =>
+                MachineInfo.NormalizeHostname(rp)
+                    .Equals(MachineInfo.NormalizeHostname(_localMachineName), StringComparison.OrdinalIgnoreCase)))
+        ));
 
         AppLogger.Log($"BuildTree: {all.Count} machines in tree: [{string.Join(", ", all.Select(m => $"{m.MachineName}(server={m.IsRdpServer},conn={m.IsConnected})"))}]");
 
@@ -540,9 +550,13 @@ public partial class TreeWindow : Window
             Margin            = new Thickness(0, 0, 8, 0)
         };
 
+        var displayName = !string.IsNullOrEmpty(info.DevBoxFriendlyName)
+            ? $"{info.DevBoxFriendlyName} ({info.MachineName})"
+            : info.MachineName;
+
         var nameBlock = new TextBlock
         {
-            Text              = info.MachineName,
+            Text              = displayName,
             Foreground        = info.IsConnected
                 ? Brushes.White
                 : new SolidColorBrush(Color.FromRgb(0x50, 0x50, 0x6A)),

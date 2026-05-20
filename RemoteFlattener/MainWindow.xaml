@@ -139,12 +139,12 @@
         <!-- ── Content ── -->
         <StackPanel Grid.Row="1" Margin="16,12,16,8">
 
-                <!-- Network Tree card -->
+                <!-- Desktop Map card -->
                 <Border Style="{StaticResource CardBorder}">
                     <DockPanel>
                         <Button x:Name="NetworkTreeButton"
                                 DockPanel.Dock="Right"
-                                Content="🌐 Network Tree"
+                                Content="🌐 Desktop Map"
                                 Style="{StaticResource GhostButton}"
                                 IsEnabled="False"
                                 Click="NetworkTree_Click"/>

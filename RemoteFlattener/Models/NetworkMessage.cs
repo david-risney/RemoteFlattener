@@ -54,7 +54,7 @@ public class NetworkMessage
     /// <summary>
     /// Sent by RDP-client machines only.  Maps server machine name → the local desktop index
     /// on which that server's mstsc window lives.  Allows every node in the mesh to place
-    /// servers under the correct desktop row in the Network Tree, not just the client itself.
+    /// servers under the correct desktop row in the Desktop Map, not just the client itself.
     /// </summary>
     [JsonPropertyName("rdpHostedServers")]
     public Dictionary<string, int>? RdpHostedServers { get; set; }
