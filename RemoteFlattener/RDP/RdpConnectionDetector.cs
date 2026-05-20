@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
 using RemoteFlattener.Models;
 
 namespace RemoteFlattener.RDP;
@@ -141,17 +142,56 @@ public static class RdpConnectionDetector
     }
 
     /// <summary>
-    /// Returns the value of the <c>CLIENTNAME</c> environment variable (normalized)
-    /// when running inside a remote session, or <see langword="null"/> otherwise.
-    /// On Cloud DevBox / AVD sessions that use WebRTC transport, this is the only
-    /// way to discover the RDP client machine name.
+    /// Returns the RDP client machine name for the current session by querying the
+    /// Windows Terminal Services API (live session data, not stale process env var).
+    /// Returns <see langword="null"/> if not in a remote session or if the query fails.
     /// </summary>
     public static string? GetRdpClientName()
     {
         if (!RdpRoleDetector.IsRemoteSession()) return null;
-        var clientName = Environment.GetEnvironmentVariable("CLIENTNAME");
+
+        // Query the live session's client name via WTS API.
+        var clientName = QueryWtsClientName();
+        if (string.IsNullOrWhiteSpace(clientName))
+        {
+            // Fallback to env var (may be stale but better than nothing).
+            clientName = Environment.GetEnvironmentVariable("CLIENTNAME");
+        }
         if (string.IsNullOrWhiteSpace(clientName)) return null;
         return MachineInfo.NormalizeHostname(clientName);
+    }
+
+    private const int WTS_CURRENT_SESSION = -1;
+    private const int WTSClientName = 10;
+    private static readonly IntPtr WTS_CURRENT_SERVER_HANDLE = IntPtr.Zero;
+
+    [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WTSQuerySessionInformationW(
+        IntPtr hServer, int sessionId, int wtsInfoClass,
+        out IntPtr ppBuffer, out int pBytesReturned);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr pointer);
+
+    /// <summary>
+    /// Queries the current session's client name via WTSQuerySessionInformation.
+    /// Returns null on failure.
+    /// </summary>
+    private static string? QueryWtsClientName()
+    {
+        if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
+                WTSClientName, out var buffer, out _))
+            return null;
+
+        try
+        {
+            return Marshal.PtrToStringUni(buffer);
+        }
+        finally
+        {
+            WTSFreeMemory(buffer);
+        }
     }
 
     /// <summary>

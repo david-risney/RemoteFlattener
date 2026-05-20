@@ -390,4 +390,54 @@ public class MergeMsrdcDesktopEntriesTests
         Assert.Equal(5, map["DAVRIS-10"]);         // pass 1 claimed it
         Assert.False(map.ContainsKey("CPC-OTHER")); // no remaining window to match
     }
+
+    [Fact]
+    public void AmbiguousRdpClientName_NeitherPairedInPass2()
+    {
+        // When multiple unmatched peers share the same RdpClientName and neither
+        // matches a window by MachineName, Pass 2 should NOT pair either (ambiguous).
+        // Only DNS (Pass 3) can disambiguate.
+        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+        var peers = new List<MachineInfo>
+        {
+            new() { MachineName = "DAVRIS-0", IsRdpServer = true, RdpClientName = "DAVRIS-10" },
+            new() { MachineName = "CPC-DAVRI-XXS9M", IsRdpServer = true, RdpClientName = "DAVRIS-10" },
+            new() { MachineName = "DAVRIS-1", IsRdpServer = false }
+        };
+
+        // Only one msrdc window "davris-10" — no "davris-0" window exists.
+        // Neither peer matches by MachineName (Pass 1 finds nothing).
+        // Both share RdpClientName=DAVRIS-10 → ambiguous → Pass 2 skips.
+        MainWindow.MergeMsrdcDesktopEntries(map, peers, "DAVRIS-4",
+            FakeMsrdc(("davris-10", 5)));
+
+        Assert.Empty(map); // Neither is paired without DNS resolution
+    }
+
+    [Fact]
+    public void AmbiguousRdpClientName_DnsResolvesToCorrectPeer()
+    {
+        // When Pass 2 is ambiguous, Pass 3 (DNS) can disambiguate by resolving the
+        // window title to an IP and matching against peer connection IPs.
+        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+        var peers = new List<MachineInfo>
+        {
+            new() { MachineName = "DAVRIS-0", IsRdpServer = true, RdpClientName = "DAVRIS-10" },
+            new() { MachineName = "CPC-DAVRI-XXS9M", IsRdpServer = true, RdpClientName = "DAVRIS-10" }
+        };
+
+        var peerAddresses = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
+        {
+            ["DAVRIS-0"] = "10.0.0.1",
+            ["CPC-DAVRI-XXS9M"] = "10.0.0.2"
+        };
+
+        // DNS resolves "davris-10" to 10.0.0.2 (CPC-DAVRI-XXS9M's IP).
+        MainWindow.MergeMsrdcDesktopEntries(map, peers, "DAVRIS-4", peerAddresses,
+            FakeMsrdc(("davris-10", 5)), title => title == "davris-10" ? "10.0.0.2" : null);
+
+        Assert.Single(map);
+        Assert.Equal(5, map["CPC-DAVRI-XXS9M"]); // DNS resolved to this peer's IP
+        Assert.False(map.ContainsKey("DAVRIS-0"));
+    }
 }

@@ -855,28 +855,33 @@ public partial class MainWindow : Window
             }
         }
 
-        // Pass 2: Match window titles against peer RdpClientName.
-        // The msrdc window title shows the DevBox friendly name (e.g. "davris-10"),
-        // and the DevBox reports RdpClientName matching that name.
-        foreach (var peer in serverPeers)
-        {
-            var normalizedPeerName = MachineInfo.NormalizeHostname(peer.MachineName);
-            if (pairedPeers.Contains(normalizedPeerName)) continue;
-            if (string.IsNullOrEmpty(peer.RdpClientName)) continue;
+        // Pass 2: Match window titles against peer RdpClientName, but ONLY when
+        // the match is unambiguous (exactly one unmatched peer has that RdpClientName).
+        // When multiple peers share the same RdpClientName (e.g. both DAVRIS-0 and
+        // CPC-DAVRI-XXS9M report RdpClientName="DAVRIS-10"), skip and let Pass 3
+        // (DNS/IP) disambiguate.
+        var unmatchedServerPeers = serverPeers
+            .Where(p => !pairedPeers.Contains(MachineInfo.NormalizeHostname(p.MachineName))
+                        && !string.IsNullOrEmpty(p.RdpClientName))
+            .ToList();
 
-            var normalizedClientName = MachineInfo.NormalizeHostname(peer.RdpClientName!);
-            foreach (var kv in msrdcMap)
+        // Group by normalized RdpClientName to find unique vs ambiguous matches.
+        var byClientName = unmatchedServerPeers
+            .GroupBy(p => MachineInfo.NormalizeHostname(p.RdpClientName!), StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() == 1)  // Only unambiguous matches
+            .ToDictionary(g => g.Key, g => g.Single(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var kv in msrdcMap)
+        {
+            if (pairedWindows.Contains(kv.Key)) continue;
+            var normalizedTitle = MachineInfo.NormalizeHostname(kv.Key);
+            if (byClientName.TryGetValue(normalizedTitle, out var peer))
             {
-                if (pairedWindows.Contains(kv.Key)) continue;
-                var normalizedTitle = MachineInfo.NormalizeHostname(kv.Key);
-                if (normalizedTitle.Equals(normalizedClientName, StringComparison.OrdinalIgnoreCase))
-                {
-                    rdpDesktopMap[normalizedPeerName] = kv.Value;
-                    pairedWindows.Add(kv.Key);
-                    pairedPeers.Add(normalizedPeerName);
-                    AppLogger.Log($"MergeMsrdc: paired '{peer.MachineName}' with msrdc window '{kv.Key}' (RdpClientName '{peer.RdpClientName}' match) → desktop{kv.Value}");
-                    break;
-                }
+                var normalizedPeerName = MachineInfo.NormalizeHostname(peer.MachineName);
+                rdpDesktopMap[normalizedPeerName] = kv.Value;
+                pairedWindows.Add(kv.Key);
+                pairedPeers.Add(normalizedPeerName);
+                AppLogger.Log($"MergeMsrdc: paired '{peer.MachineName}' with msrdc window '{kv.Key}' (RdpClientName '{peer.RdpClientName}' match) → desktop{kv.Value}");
             }
         }
 
