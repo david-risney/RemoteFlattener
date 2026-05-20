@@ -320,4 +320,48 @@ public class MergeMsrdcDesktopEntriesTests
         Assert.Single(map);
         Assert.Equal(2, map["EXISTING"]);
     }
+
+    [Fact]
+    public void TitleMatchesRdpClientName_PairsByTitle()
+    {
+        // Scenario: peer CPC-DEVBOX reports RdpClientName="DAVRIS-10" (stale/wrong client)
+        // and the msrdc window is titled "davris-10" (the DevBox friendly name).
+        // Even though local machine is "MY-PC" (not DAVRIS-10), the title-to-RdpClientName
+        // match pairs them correctly.
+        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+        var peers = new List<MachineInfo>
+        {
+            new()
+            {
+                MachineName = "CPC-DEVBOX-1",
+                IsRdpServer = true,
+                RdpClientName = "DAVRIS-10"
+            }
+        };
+
+        MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
+            FakeMsrdc(("davris-10", 5)));
+
+        Assert.Single(map);
+        Assert.Equal(5, map["CPC-DEVBOX-1"]);
+    }
+
+    [Fact]
+    public void TitleMatchesRdpClientName_MultiplePeers_PairedCorrectly()
+    {
+        // Two DevBox peers with different RdpClientNames; msrdc windows match by title.
+        var map = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+        var peers = new List<MachineInfo>
+        {
+            new() { MachineName = "CPC-DEV-A", IsRdpServer = true, RdpClientName = "WORKSPACE-A" },
+            new() { MachineName = "CPC-DEV-B", IsRdpServer = true, RdpClientName = "WORKSPACE-B" }
+        };
+
+        MainWindow.MergeMsrdcDesktopEntries(map, peers, "MY-PC",
+            FakeMsrdc(("workspace-b", 3), ("workspace-a", 1)));
+
+        Assert.Equal(2, map.Count);
+        Assert.Equal(1, map["CPC-DEV-A"]);
+        Assert.Equal(3, map["CPC-DEV-B"]);
+    }
 }

@@ -155,4 +155,79 @@ public class RdpWindowLocatorTests
             "DAVRIS-0", ["DAVRIS-0"]);
         Assert.Null(result);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // MatchMsrdcTitle — msrdc (Windows App) title matching
+    // ═══════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void MatchMsrdcTitle_ExactHostname_Matches()
+    {
+        var result = RdpWindowLocator.MatchMsrdcTitle("DAVRIS-0", ["DAVRIS-0", "SERVER-B"]);
+        Assert.Equal("DAVRIS-0", result);
+    }
+
+    [Fact]
+    public void MatchMsrdcTitle_CaseInsensitive_Matches()
+    {
+        var result = RdpWindowLocator.MatchMsrdcTitle("davris-0", ["DAVRIS-0"]);
+        Assert.Equal("DAVRIS-0", result);
+    }
+
+    [Fact]
+    public void MatchMsrdcTitle_WithSeparator_Matches()
+    {
+        // Windows App may use "HOSTNAME - Remote Desktop" format.
+        var result = RdpWindowLocator.MatchMsrdcTitle(
+            "CPC-DAVRI-XXS9M - Remote Desktop", ["CPC-DAVRI-XXS9M"]);
+        Assert.Equal("CPC-DAVRI-XXS9M", result);
+    }
+
+    [Fact]
+    public void MatchMsrdcTitle_ContainsHostname_Matches()
+    {
+        // Title contains the hostname at a word boundary.
+        var result = RdpWindowLocator.MatchMsrdcTitle(
+            "My DevBox (DAVRIS-0)", ["DAVRIS-0"]);
+        Assert.Equal("DAVRIS-0", result);
+    }
+
+    [Fact]
+    public void MatchMsrdcTitle_SubstringNotAtWordBoundary_DoesNotMatch()
+    {
+        // "DAVRIS-1" is a substring of "davris-10" but NOT at a word boundary.
+        var result = RdpWindowLocator.MatchMsrdcTitle("davris-10", ["DAVRIS-1"]);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void MatchMsrdcTitle_LongerNameMatchesExactly()
+    {
+        // "DAVRIS-10" should match the title "davris-10" exactly.
+        var result = RdpWindowLocator.MatchMsrdcTitle("davris-10", ["DAVRIS-1", "DAVRIS-10"]);
+        Assert.Equal("DAVRIS-10", result);
+    }
+
+    [Fact]
+    public void MatchMsrdcTitle_NoMatch_ReturnsNull()
+    {
+        var result = RdpWindowLocator.MatchMsrdcTitle("Something Else", ["DAVRIS-0"]);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void MatchMsrdcTitle_EmptyTitle_ReturnsNull()
+    {
+        var result = RdpWindowLocator.MatchMsrdcTitle("", ["DAVRIS-0"]);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void MatchMsrdcTitle_FqdnInNames_MatchesShortTitle()
+    {
+        // Title is short name, names list has FQDN — NormalizeHostname makes it match.
+        var result = RdpWindowLocator.MatchMsrdcTitle(
+            "DAVRIS-0", ["davris-0.corp.microsoft.com"]);
+        Assert.Equal("davris-0.corp.microsoft.com", result);
+    }
 }

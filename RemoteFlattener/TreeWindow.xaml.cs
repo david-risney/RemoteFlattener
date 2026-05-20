@@ -403,6 +403,21 @@ public partial class TreeWindow : Window
             // Merge msrdc (Cloud DevBox / AVD) windows by pairing them with peers
             // that report RdpClientName matching our local machine name.
             MainWindow.MergeMsrdcDesktopEntries(localRdpMap, _peers, _localMachineName);
+
+            // Fallback: scan msrdc (Windows App) windows by title for any peers still
+            // not in the map.  This handles the case where msrdc is used instead of
+            // mstsc and the RdpClientName doesn't match the local machine name.
+            var unmappedNames = allMachineNames
+                .Select(MachineInfo.NormalizeHostname)
+                .Where(n => !localRdpMap.ContainsKey(n))
+                .ToList();
+            if (unmappedNames.Count > 0)
+            {
+                var msrdcByName = RdpWindowLocator.GetMsrdcDesktopMapByName(unmappedNames);
+                foreach (var kv in msrdcByName)
+                    localRdpMap[kv.Key] = kv.Value;
+            }
+
             localMachineInfo.RdpHostedServers = new Dictionary<string, int>(
                 localRdpMap.ToDictionary(
                     kv => MachineInfo.NormalizeHostname(kv.Key),
@@ -415,6 +430,11 @@ public partial class TreeWindow : Window
         }
         _rdpDesktopMap = localRdpMap;
 
+        if (localRdpMap.Count > 0)
+            AppLogger.Log($"BuildTree: hostedMap has {localRdpMap.Count} entries: {string.Join(", ", localRdpMap.Select(kv => $"{kv.Key}→desktop{kv.Value}"))}");
+        else
+            AppLogger.Log($"BuildTree: hostedMap is EMPTY — no mstsc/msrdc windows found for peers [{string.Join(", ", allMachineNames)}]");
+
         // Only include peers that are reachable: directly connected, known via the
         // mesh (IsIndirect), or RDP servers the local machine is actively hosting
         // an mstsc/msrdc window for.
@@ -422,6 +442,8 @@ public partial class TreeWindow : Window
         all.AddRange(_peers.Where(p => p.IsConnected || p.IsIndirect ||
             (p.IsRdpServer && localMachineInfo.RdpHostedServers.ContainsKey(
                 MachineInfo.NormalizeHostname(p.MachineName)))));
+
+        AppLogger.Log($"BuildTree: {all.Count} machines in tree: [{string.Join(", ", all.Select(m => $"{m.MachineName}(server={m.IsRdpServer},conn={m.IsConnected})"))}]");
 
         DesktopRow[] DesktopRowsFor(MachineInfo m) => GetDesktopRowsFor(m);
 
