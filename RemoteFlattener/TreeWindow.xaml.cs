@@ -570,25 +570,8 @@ public partial class TreeWindow : Window
         topRow.Children.Add(dot);
         topRow.Children.Add(nameBlock);
 
-        var subtitleText = !info.IsConnected
-            ? "Offline"
-            : info.TotalDesktops > 0
-                ? $"Desktop {info.CurrentDesktop} of {info.TotalDesktops}"
-                : "Connected";
-        var subtitleBlock = new TextBlock
-        {
-            Text       = subtitleText,
-            Foreground = new SolidColorBrush(info.IsConnected
-                ? Color.FromRgb(0x4A, 0x4A, 0x6A)
-                : Color.FromRgb(0x38, 0x38, 0x50)),
-            FontSize   = 11,
-            FontFamily = new FontFamily("Segoe UI"),
-            Margin     = new Thickness(15, 3, 0, 0)
-        };
-
         var leftStack = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
         leftStack.Children.Add(topRow);
-        leftStack.Children.Add(subtitleBlock);
 
         var header = new DockPanel
         {
