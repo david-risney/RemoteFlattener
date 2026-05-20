@@ -66,15 +66,15 @@
                                 <Border Background="#1EFFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,5,0">
                                     <TextBlock Text="↑↓" Foreground="#7777AA" FontSize="9" FontFamily="Segoe UI"/>
                                 </Border>
-                                <TextBlock Text="Navigate" Foreground="#33334A" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <TextBlock Text="Navigate" Foreground="#9999BB" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <Border Background="#1EFFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,5,0">
                                     <TextBlock Text="↵" Foreground="#7777AA" FontSize="9" FontFamily="Segoe UI"/>
                                 </Border>
-                                <TextBlock Text="Activate" Foreground="#33334A" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <TextBlock Text="Activate" Foreground="#9999BB" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <Border Background="#1EFFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,5,0">
                                     <TextBlock Text="Esc" Foreground="#7777AA" FontSize="9" FontFamily="Segoe UI"/>
                                 </Border>
-                                <TextBlock Text="Close" Foreground="#33334A" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center"/>
+                                <TextBlock Text="Close" Foreground="#9999BB" FontSize="10" FontFamily="Segoe UI" VerticalAlignment="Center"/>
                             </StackPanel>
                         </StackPanel>
                     </DockPanel>
