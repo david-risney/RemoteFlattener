@@ -121,6 +121,16 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState.Minimized;
+    }
+
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
     private void InitializeTrayIcon()
     {
         _notifyIcon = new System.Windows.Forms.NotifyIcon

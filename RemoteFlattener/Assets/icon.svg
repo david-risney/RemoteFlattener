@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Background circle -->
+  <circle cx="128" cy="128" r="120" fill="#1E1E2E"/>
+  
+  <!-- Connection lines from parent to children -->
+  <line x1="128" y1="80" x2="80" y2="176" stroke="#5588CC" stroke-width="8" stroke-linecap="round"/>
+  <line x1="128" y1="80" x2="176" y2="176" stroke="#5588CC" stroke-width="8" stroke-linecap="round"/>
+  
+  <!-- Parent node (top center) -->
+  <circle cx="128" cy="72" r="24" fill="#7799DD"/>
+  
+  <!-- Left child node -->
+  <circle cx="80" cy="184" r="20" fill="#55AACC"/>
+  
+  <!-- Right child node -->
+  <circle cx="176" cy="184" r="20" fill="#55AACC"/>
+</svg>

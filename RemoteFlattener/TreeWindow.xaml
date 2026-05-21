@@ -10,16 +10,17 @@
         SizeToContent="WidthAndHeight"
         PreviewKeyDown="Window_KeyDown"
         Focusable="True">
+    <Border Padding="24" Background="Transparent">
     <Border x:Name="ContentPanel"
             MinWidth="500" MaxWidth="740" MaxHeight="900"
             Background="#F01E1E2E"
             BorderBrush="#22FFFFFF"
             BorderThickness="1"
-            CornerRadius="12"
-            ClipToBounds="True">
+            CornerRadius="12">
         <Border.Effect>
             <DropShadowEffect ShadowDepth="0" BlurRadius="48" Opacity="0.75" Color="Black"/>
         </Border.Effect>
+        <Border CornerRadius="12" ClipToBounds="True">
         <DockPanel>
 
                 <!-- ── Header ── -->
@@ -141,4 +142,6 @@
 
             </DockPanel>
         </Border>
+        </Border>
+    </Border>
 </Window>
