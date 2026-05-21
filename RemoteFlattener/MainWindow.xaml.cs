@@ -136,7 +136,7 @@ public partial class MainWindow : Window
         _notifyIcon = new System.Windows.Forms.NotifyIcon
         {
             Text    = "RemoteFlattener",
-            Icon    = System.Drawing.SystemIcons.Application,
+            Icon    = LoadAppIcon(),
             Visible = true
         };
         var menu = new System.Windows.Forms.ContextMenuStrip();
@@ -149,6 +149,15 @@ public partial class MainWindow : Window
         }));
         _notifyIcon.ContextMenuStrip = menu;
         _notifyIcon.DoubleClick     += (_, _) => Dispatcher.Invoke(OpenSettings);
+    }
+
+    private static System.Drawing.Icon LoadAppIcon()
+    {
+        var stream = System.Windows.Application.GetResourceStream(
+            new Uri("pack://application:,,,/Assets/app.ico"))?.Stream;
+        return stream != null
+            ? new System.Drawing.Icon(stream)
+            : System.Drawing.SystemIcons.Application;
     }
 
     protected override void OnStateChanged(EventArgs e)
