@@ -425,8 +425,23 @@ public partial class TreeWindow : Window
         // - RDP servers the local machine is hosting an mstsc/msrdc window for
         // - Client peers that host servers we know about
         // - When we're a server: the client peer that hosts us
+        // - Sibling servers: other servers hosted by the same client that hosts us
         // Exclude peers that are merely connected but have no RDP relationship.
         var all = new List<MachineInfo> { localMachineInfo };
+
+        // Collect the set of machine names that our hosting client(s) also host,
+        // so sibling servers can be included.
+        var siblingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_localIsRdpServer)
+        {
+            foreach (var client in _peers.Where(p => !p.IsRdpServer &&
+                p.RdpHostedServers.ContainsKey(MachineInfo.NormalizeHostname(_localMachineName))))
+            {
+                foreach (var hosted in client.RdpHostedServers.Keys)
+                    siblingNames.Add(hosted);
+            }
+        }
+
         all.AddRange(_peers.Where(p =>
             // Server peers that appear in our local RDP hosted map
             (p.IsRdpServer && localMachineInfo.RdpHostedServers.ContainsKey(
@@ -436,7 +451,9 @@ public partial class TreeWindow : Window
             // When we're a server: any client peer that lists us in RdpPeers
             (_localIsRdpServer && !p.IsRdpServer && p.RdpPeers.Any(rp =>
                 MachineInfo.NormalizeHostname(rp)
-                    .Equals(MachineInfo.NormalizeHostname(_localMachineName), StringComparison.OrdinalIgnoreCase)))
+                    .Equals(MachineInfo.NormalizeHostname(_localMachineName), StringComparison.OrdinalIgnoreCase))) ||
+            // Sibling servers: other servers hosted by the same client
+            (p.IsRdpServer && siblingNames.Contains(MachineInfo.NormalizeHostname(p.MachineName)))
         ));
 
         AppLogger.Log($"BuildTree: {all.Count} machines in tree: [{string.Join(", ", all.Select(m => $"{m.MachineName}(server={m.IsRdpServer},conn={m.IsConnected})"))}]");
@@ -764,7 +781,7 @@ public partial class TreeWindow : Window
             Text       = d.DisplayName,
             Foreground = d.IsCurrent
                 ? Brushes.White
-                : new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x99)),
+                : new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xDD)),
             FontSize   = 13,
             FontWeight = d.IsCurrent ? FontWeights.SemiBold : FontWeights.Normal,
             FontFamily = new FontFamily("Segoe UI")
