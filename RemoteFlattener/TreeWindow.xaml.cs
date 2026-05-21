@@ -842,7 +842,6 @@ public partial class TreeWindow : Window
             AppLogger.Log($"DesktopMap action: machine={machineName}, desktopIndex={desktopIndex}, isLocal={isLocal}, isCurrent={isCurrent}");
             if (isCurrent)
             {
-                AppLogger.Log("DesktopMap action: isCurrent=true, closing window.");
                 _closing = true;
                 Close();
                 return;
@@ -854,12 +853,11 @@ public partial class TreeWindow : Window
                 AppLogger.Log($"DesktopMap action: switching root ({_rdpDesktopMapOwner}) to desktop {localIdx} (hosts {normalizedName})");
                 _onSwitchToDesktop(_rdpDesktopMapOwner, localIdx);
             }
-            else if (!isLocal)
-            {
-                AppLogger.Log($"DesktopMap action: '{normalizedName}' NOT found in _rdpDesktopMap. Keys: [{string.Join(", ", _rdpDesktopMap.Keys)}]");
-            }
             AppLogger.Log($"DesktopMap action: switching {machineName} to desktop {desktopIndex}");
             _onSwitchToDesktop(machineName, desktopIndex);
+            // Always dismiss the overlay after a selection.
+            _closing = true;
+            Close();
         };
 
         var row = new DockPanel
