@@ -587,7 +587,7 @@ public partial class MainWindow : Window
         {
             if (_treeWindow is { IsVisible: true })
             {
-                AppLogger.Log("Win+Tab: closing overlay.");
+                AppLogger.Log("Win+Tab: closing overlay and opening Task View.");
                 try
                 {
                     _treeWindow.Close();
@@ -597,6 +597,7 @@ public partial class MainWindow : Window
                     AppLogger.Log($"Win+Tab: Close() threw: {ex}");
                 }
                 _treeWindow = null;
+                InvokeTaskView();
             }
             else
             {
