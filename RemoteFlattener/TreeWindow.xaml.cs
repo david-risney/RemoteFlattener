@@ -108,13 +108,17 @@ public partial class TreeWindow : Window
         bool    IsLocal
     );
 
+    // Pre-computed RDP map passed from MainWindow (avoids expensive EnumWindows on first open).
+    private Dictionary<string, int>? _cachedRdpMapFromCaller;
+
     public TreeWindow(
         ObservableCollection<MachineInfo> peers,
         string localMachineName,
         bool localIsRdpServer,
         Action<string> onTaskViewRequested,
         Action<string, int> onSwitchToDesktop,
-        Action onSettingsRequested)
+        Action onSettingsRequested,
+        Dictionary<string, int>? cachedRdpMap = null)
     {
         InitializeComponent();
         _onTaskViewRequested = onTaskViewRequested;
@@ -123,6 +127,7 @@ public partial class TreeWindow : Window
         _peers               = peers;
         _localMachineName    = localMachineName;
         _localIsRdpServer    = localIsRdpServer;
+        _cachedRdpMapFromCaller = cachedRdpMap;
 
         // Debounce: wait 200 ms after the last change before rebuilding.
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
@@ -314,6 +319,7 @@ public partial class TreeWindow : Window
 
     private void RefreshTree()
     {
+        using var perf = PerfTrace.Begin("RefreshTree");
         var prevIndex = _navIndex;
 
         NetworkTree.Items.Clear();
@@ -321,7 +327,8 @@ public partial class TreeWindow : Window
         _navIndex = -1;
         _currentDesktopNavIndex = -1;
 
-        BuildTree();
+        BuildTree(perf);
+        perf.Checkpoint("BuildTree done");
         CollectNavItems();
 
         if (_navItems.Count > 0)
@@ -340,6 +347,7 @@ public partial class TreeWindow : Window
             UpdateLayout();
             PositionOnActiveMonitor();
         }
+        perf.Checkpoint("layout + position done");
     }
 
     /// <summary>
@@ -378,7 +386,7 @@ public partial class TreeWindow : Window
             CollectNavItemsRecursive(child);
     }
 
-    private void BuildTree()
+    private void BuildTree(PerfTrace? perf = null)
     {
         var localMachineInfo = new MachineInfo
         {
@@ -390,6 +398,7 @@ public partial class TreeWindow : Window
         };
 
         var localApiDesktops = VirtualDesktopProvider.GetAllDesktops();
+        perf?.Checkpoint("GetAllDesktops");
         _localApiDesktops    = localApiDesktops;   // cache for GetDesktopRowsFor()
         _cachedDesktopCount     = localApiDesktops.Length;
         _cachedDesktopSignature = BuildDesktopSignature(localApiDesktops);
@@ -403,11 +412,22 @@ public partial class TreeWindow : Window
         string rdpMapOwner;
         if (!_localIsRdpServer)
         {
-            localRdpMap = RdpWindowLocator.GetRdpDesktopMap(
-                allMachineNames.Select(MachineInfo.NormalizeHostname).ToList());
-            // Merge msrdc (Cloud DevBox / AVD) windows by pairing them with peers
-            // via MachineName match, RdpClientName match, or DNS/IP resolution.
-            MainWindow.MergeMsrdcDesktopEntries(localRdpMap, _peers, _localMachineName);
+            // Use pre-computed map from caller if available (avoids expensive EnumWindows).
+            if (_cachedRdpMapFromCaller != null)
+            {
+                localRdpMap = _cachedRdpMapFromCaller;
+                _cachedRdpMapFromCaller = null; // consume once; subsequent refreshes recompute
+                perf?.Checkpoint("RdpDesktopMap (cached)");
+            }
+            else
+            {
+                localRdpMap = RdpWindowLocator.GetRdpDesktopMap(
+                    allMachineNames.Select(MachineInfo.NormalizeHostname).ToList());
+                // Merge msrdc (Cloud DevBox / AVD) windows by pairing them with peers
+                // via MachineName match, RdpClientName match, or DNS/IP resolution.
+                MainWindow.MergeMsrdcDesktopEntries(localRdpMap, _peers, _localMachineName);
+                perf?.Checkpoint("RdpDesktopMap + MergeMsrdc");
+            }
 
             localMachineInfo.RdpHostedServers = new Dictionary<string, int>(
                 localRdpMap.ToDictionary(
@@ -548,6 +568,7 @@ public partial class TreeWindow : Window
             AddDesktopChildren(item, DesktopRowsFor(machine));
             NetworkTree.Items.Add(item);
         }
+        perf?.Checkpoint("UI tree items built");
     }
 
     // ── Keyboard navigation ───────────────────────────────────────────────────
@@ -744,18 +765,8 @@ public partial class TreeWindow : Window
         UIElement thumbnail;
         try
         {
-            BitmapImage? bmp = null;
-            if (!string.IsNullOrEmpty(d.WallpaperPath) && File.Exists(d.WallpaperPath))
-            {
-                using var stream = new FileStream(d.WallpaperPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                bmp = LoadBitmapFromStream(stream);
-            }
-            else if (!string.IsNullOrEmpty(d.WallpaperData))
-            {
-                var bytes = Convert.FromBase64String(d.WallpaperData);
-                using var ms = new MemoryStream(bytes);
-                bmp = LoadBitmapFromStream(ms);
-            }
+            BitmapImage? bmp = WallpaperCache.GetOrLoadFromFile(d.WallpaperPath!)
+                            ?? WallpaperCache.GetOrLoadFromBase64(d.WallpaperData!);
 
             if (bmp != null)
             {
@@ -890,18 +901,6 @@ public partial class TreeWindow : Window
             Margin            = new Thickness(0, 0, 12, 0),
             VerticalAlignment = VerticalAlignment.Center
         };
-
-    private static BitmapImage LoadBitmapFromStream(Stream stream)
-    {
-        var bmp = new BitmapImage();
-        bmp.BeginInit();
-        bmp.StreamSource     = stream;
-        bmp.DecodePixelWidth = 128;
-        bmp.CacheOption      = BitmapCacheOption.OnLoad;
-        bmp.EndInit();
-        bmp.Freeze();
-        return bmp;
-    }
 
     private static bool TryParseHexColor(string hex, out Color color)
     {

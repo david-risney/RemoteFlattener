@@ -29,6 +29,10 @@ public partial class MainWindow : Window
     private TreeWindow? _treeWindow;
     private Timer? _stateTimer;
 
+    // Cached RDP desktop map from the last state broadcast (avoids re-enumerating
+    // windows when Win+Tab opens the overlay).
+    private Dictionary<string, int>? _cachedRdpMap;
+
     private bool _isRunning;
     private bool _isRdpServer;
     private System.Windows.Forms.NotifyIcon? _notifyIcon;
@@ -583,8 +587,10 @@ public partial class MainWindow : Window
 
     private void OnWinTabPressed()
     {
+        var perfOuter = PerfTrace.Begin("Win+Tab (hook→dispatch)");
         Dispatcher.BeginInvoke(() =>
         {
+            perfOuter.Checkpoint("UI thread entered");
             if (_treeWindow is { IsVisible: true })
             {
                 AppLogger.Log("Win+Tab: closing overlay and opening Task View.");
@@ -598,9 +604,11 @@ public partial class MainWindow : Window
                 }
                 _treeWindow = null;
                 InvokeTaskView();
+                perfOuter.Dispose();
             }
             else
             {
+                using var perf = PerfTrace.Begin("Win+Tab open overlay");
                 AppLogger.Log("Win+Tab: opening overlay.");
                 _treeWindow = new TreeWindow(
                     Connections,
@@ -608,10 +616,15 @@ public partial class MainWindow : Window
                     _isRdpServer,
                     RequestTaskView,
                     RequestSwitchToDesktop,
-                    OpenSettings);
+                    OpenSettings,
+                    _cachedRdpMap);
+                perf.Checkpoint("TreeWindow constructed");
                 _treeWindow.Closed += (_, _) => _treeWindow = null;
                 _treeWindow.Show();
+                perf.Checkpoint("Show() returned");
                 _treeWindow.Activate();
+                perf.Checkpoint("Activate() returned");
+                perfOuter.Dispose();
             }
         });
     }
@@ -777,6 +790,17 @@ public partial class MainWindow : Window
         var peerAddresses = _networkManager.GetPeerAddresses();
         MergeMsrdcDesktopEntries(map, Connections, LocalName, peerAddresses);
         return NormalizeRdpHostedServers(map);
+    }
+
+    /// <summary>
+    /// Builds the local RDP hosted servers map and caches it for use by
+    /// the TreeWindow overlay (avoids re-enumerating windows on Win+Tab open).
+    /// </summary>
+    private Dictionary<string, int> CacheAndReturnRdpMap()
+    {
+        var map = BuildLocalRdpHostedServers();
+        _cachedRdpMap = map;
+        return map;
     }
 
     /// <summary>
@@ -1051,12 +1075,25 @@ public partial class MainWindow : Window
                 RdpClientName       = _isRdpServer ? RdpConnectionDetector.GetRdpClientName() : null,
                 DevBoxFriendlyName  = _isRdpServer ? RDP.DevBoxInfoProvider.GetDevBoxFriendlyName() : null,
                 RdpHostedServers    = _isRdpServer ? null
-                    : BuildLocalRdpHostedServers(),
+                    : CacheAndReturnRdpMap(),
                 DesktopNames        = apiDesktops.Select(d => d.DisplayName).ToList(),
                 WallpaperThumbnails = apiDesktops.Select(d => EncodeWallpaperThumbnail(d.WallpaperPath) ?? "").ToList(),
                 WallpaperColors     = apiDesktops.Select(d => d.BackgroundColor ?? "").ToList()
             };
             _ = _networkManager.BroadcastAsync(msg);
+
+            // Pre-warm the wallpaper cache on a background thread so the first
+            // Win+Tab open doesn't block on disk I/O.
+            var wallpaperPaths = apiDesktops
+                .Select(d => d.WallpaperPath)
+                .Where(p => !string.IsNullOrEmpty(p))
+                .ToArray();
+            if (wallpaperPaths.Length > 0)
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    foreach (var p in wallpaperPaths)
+                        WallpaperCache.GetOrLoadFromFile(p!);
+                });
         });
     }
 
