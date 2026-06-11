@@ -28,6 +28,7 @@ public partial class MainWindow : Window
     private HotkeyManager? _hotkeyManager;
     private TreeWindow? _treeWindow;
     private Timer? _stateTimer;
+    private Timer? _vpnTimer;
 
     // Cached RDP desktop map from the last state broadcast (avoids re-enumerating
     // windows when Win+Tab opens the overlay).
@@ -47,6 +48,7 @@ public partial class MainWindow : Window
 
     private const int MaxLogLines = 500;
     private int _logLineCount;
+    private bool _settingsLoading;
 
     // ── Static frozen brushes for status label (avoid per-call allocations) ───
     private static readonly SolidColorBrush RunningForeground = Freeze(new SolidColorBrush(Color.FromRgb(0x5A, 0xD0, 0x6A)));
@@ -80,6 +82,7 @@ public partial class MainWindow : Window
 
     private void LoadSettings()
     {
+        _settingsLoading = true;
         var s = SettingsStore.Load();
 
         // Restore machines list — pre-populate Connections so the merged peer list is visible
@@ -93,6 +96,11 @@ public partial class MainWindow : Window
                     Connections.Add(new MachineInfo { MachineName = name });
             }
         }
+
+        // Restore VPN settings.
+        AutoConnectVpnCheck.IsChecked = s.AutoConnectVpn;
+        PopulateVpnCombo(s.VpnConnectionName);
+        VpnNameCombo.IsEnabled = s.AutoConnectVpn;
 
         // Restore or auto-generate password.
         var savedPassword = string.IsNullOrWhiteSpace(s.EncryptedPassword)
@@ -109,6 +117,8 @@ public partial class MainWindow : Window
             GenerateAndSavePassword();
             AppLogger.Log("No saved password found — generated a new one.");
         }
+
+        _settingsLoading = false;
 
         // Save whenever the user edits the password box.
         PasswordBox.TextChanged += (_, _) => SaveSettings();
@@ -181,12 +191,91 @@ public partial class MainWindow : Window
 
     private void SaveSettings()
     {
+        if (_settingsLoading) return;
+
         var password = PasswordBox.Text ?? string.Empty;
         SettingsStore.Save(new SettingsStore.AppSettings
         {
             EncryptedPassword = string.IsNullOrEmpty(password) ? string.Empty : SettingsStore.Encrypt(password),
-            Machines = string.Join("\n", Connections.Select(m => m.MachineName))
+            Machines = string.Join("\n", Connections.Select(m => m.MachineName)),
+            AutoConnectVpn = AutoConnectVpnCheck.IsChecked == true,
+            VpnConnectionName = VpnNameCombo.SelectedItem as string ?? string.Empty,
         });
+    }
+
+    // ── VPN UI handlers ─────────────────────────────────────────────────────────
+
+    private void PopulateVpnCombo(string? selectedName)
+    {
+        var connections = VpnConnector.GetAvailableVpnConnections();
+        VpnNameCombo.Items.Clear();
+        foreach (var name in connections)
+            VpnNameCombo.Items.Add(name);
+
+        if (!string.IsNullOrEmpty(selectedName) && connections.Contains(selectedName))
+            VpnNameCombo.SelectedItem = selectedName;
+        else if (connections.Count > 0)
+            VpnNameCombo.SelectedIndex = 0;
+    }
+
+    private void AutoConnectVpnCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        VpnNameCombo.IsEnabled = AutoConnectVpnCheck.IsChecked == true;
+        if (AutoConnectVpnCheck.IsChecked == true)
+            PopulateVpnCombo(VpnNameCombo.SelectedItem as string);
+        SaveSettings();
+
+        // Start or stop the VPN timer based on the new state (only while running).
+        if (_isRunning)
+            StartVpnTimer();
+    }
+
+    private void VpnNameCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        SaveSettings();
+    }
+
+    private void VpnNameCombo_DropDownOpened(object sender, EventArgs e)
+    {
+        // Refresh the list only if it's empty (e.g. first open or after an error).
+        if (VpnNameCombo.Items.Count == 0)
+            PopulateVpnCombo(null);
+    }
+
+    private const int VpnCheckIntervalMs = 60_000; // check every 60 seconds
+
+    private void StartVpnTimer()
+    {
+        _vpnTimer?.Dispose();
+        _vpnTimer = null;
+
+        if (AutoConnectVpnCheck.IsChecked != true)
+            return;
+
+        var vpnName = VpnNameCombo.SelectedItem as string;
+        if (string.IsNullOrEmpty(vpnName))
+            return;
+
+        // Fire immediately (1 s delay) then repeat periodically.
+        _vpnTimer = new Timer(_ => CheckVpnConnection(), null, 1_000, VpnCheckIntervalMs);
+    }
+
+    private async void CheckVpnConnection()
+    {
+        // Read settings from the UI thread.
+        string? vpnName = null;
+        bool enabled = false;
+        Dispatcher.Invoke(() =>
+        {
+            enabled = AutoConnectVpnCheck.IsChecked == true;
+            vpnName = VpnNameCombo.SelectedItem as string;
+        });
+
+        if (!enabled || string.IsNullOrEmpty(vpnName))
+            return;
+
+        // Never auto-disconnect — only reconnect if disconnected.
+        await VpnConnector.ConnectAsync(vpnName);
     }
 
     // ── Button handlers ───────────────────────────────────────────────────────
@@ -265,6 +354,9 @@ public partial class MainWindow : Window
     private void PeersToggle_Click(object sender, RoutedEventArgs e) =>
         ToggleSection(PeersSection, PeersChevron);
 
+    private void NetworkToggle_Click(object sender, RoutedEventArgs e) =>
+        ToggleSection(NetworkSection, NetworkChevron);
+
     private void PasswordToggle_Click(object sender, RoutedEventArgs e) =>
         ToggleSection(PasswordSection, PasswordChevron);
 
@@ -294,6 +386,9 @@ public partial class MainWindow : Window
                 "RemoteFlattener", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+
+        // Auto-connect VPN if enabled (checked periodically while running).
+        StartVpnTimer();
 
         var machines = Connections.Select(m => m.MachineName).ToArray();
 
@@ -367,6 +462,9 @@ public partial class MainWindow : Window
         _isRunning = false;
 
         VirtualDesktopProvider.DesktopChanged -= OnDesktopChangedEvent;
+
+        _vpnTimer?.Dispose();
+        _vpnTimer = null;
 
         _stateTimer?.Dispose();
         _stateTimer = null;

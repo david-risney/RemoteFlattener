@@ -19,6 +19,8 @@ public static class SettingsStore
     {
         public string EncryptedPassword { get; set; } = string.Empty;
         public string Machines { get; set; } = string.Empty;
+        public bool AutoConnectVpn { get; set; }
+        public string VpnConnectionName { get; set; } = string.Empty;
     }
 
     public static AppSettings Load()

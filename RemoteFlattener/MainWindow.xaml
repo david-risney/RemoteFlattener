@@ -30,6 +30,95 @@
             <Setter Property="Text"        Value="SECTION"/>
         </Style>
 
+        <!-- Dark ComboBox -->
+        <Style x:Key="DarkComboBox" TargetType="ComboBox">
+            <Setter Property="Background"      Value="#13131F"/>
+            <Setter Property="Foreground"      Value="#E0E0F0"/>
+            <Setter Property="BorderBrush"     Value="#3A3A50"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="8,5"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="ToggleBtn"
+                                          Focusable="False"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Border"
+                                                Background="{Binding Background, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                BorderThickness="1" CornerRadius="4">
+                                            <TextBlock Text="▾" Foreground="#666680" FontSize="11"
+                                                       HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                       Margin="0,0,8,0"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Border" Property="BorderBrush" Value="#5A5A70"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter x:Name="ContentSite"
+                                              IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              Margin="{TemplateBinding Padding}"
+                                              VerticalAlignment="Center"
+                                              HorizontalAlignment="Left"/>
+                            <Popup x:Name="Popup" Placement="Bottom"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   AllowsTransparency="True" Focusable="False"
+                                   PopupAnimation="Slide">
+                                <Border x:Name="DropDown"
+                                        Background="#1E1E2E"
+                                        BorderBrush="#3A3A50"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        MinWidth="{TemplateBinding ActualWidth}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                        Padding="2">
+                                    <ScrollViewer SnapsToDevicePixels="True">
+                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark ComboBoxItem -->
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground"  Value="#E0E0F0"/>
+            <Setter Property="Background"  Value="Transparent"/>
+            <Setter Property="Padding"     Value="8,5"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="3" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#33335A"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#2A2A4A"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Dark text box -->
         <Style x:Key="DarkTextBox" TargetType="TextBox">
             <Setter Property="Background"         Value="#13131F"/>
@@ -166,16 +255,53 @@
 
                 <!-- Desktop Map card -->
                 <Border Style="{StaticResource CardBorder}">
-                    <DockPanel>
-                        <Button x:Name="NetworkTreeButton"
-                                DockPanel.Dock="Right"
-                                Content="🌐 Desktop Map"
-                                Style="{StaticResource GhostButton}"
-                                IsEnabled="False"
-                                Click="NetworkTree_Click"/>
-                        <TextBlock Style="{StaticResource SectionLabel}"
-                                   Text="NETWORK" VerticalAlignment="Center" Margin="0"/>
-                    </DockPanel>
+                    <StackPanel>
+                        <DockPanel>
+                            <Button x:Name="NetworkTreeButton"
+                                    DockPanel.Dock="Right"
+                                    Content="🌐 Desktop Map"
+                                    Style="{StaticResource GhostButton}"
+                                    IsEnabled="False"
+                                    Click="NetworkTree_Click"/>
+                            <Button x:Name="NetworkToggle"
+                                    Style="{StaticResource GhostButton}"
+                                    Background="Transparent"
+                                    HorizontalAlignment="Left"
+                                    HorizontalContentAlignment="Left"
+                                    Padding="0,7"
+                                    Click="NetworkToggle_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock x:Name="NetworkChevron" Text="▸"
+                                               Foreground="#666680" FontSize="10"
+                                               VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock Text="NETWORK"
+                                               Style="{StaticResource SectionLabel}"
+                                               Margin="0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                        </DockPanel>
+
+                        <!-- VPN auto-connect (collapsible) -->
+                        <StackPanel x:Name="NetworkSection" Visibility="Collapsed" Margin="0,8,0,0">
+                            <DockPanel>
+                                <ComboBox x:Name="VpnNameCombo"
+                                          DockPanel.Dock="Right"
+                                          MinWidth="160" MaxWidth="220"
+                                          IsEnabled="False"
+                                          Style="{StaticResource DarkComboBox}"
+                                          VerticalAlignment="Center"
+                                          SelectionChanged="VpnNameCombo_SelectionChanged"
+                                          DropDownOpened="VpnNameCombo_DropDownOpened"/>
+                                <CheckBox x:Name="AutoConnectVpnCheck"
+                                          Content="Auto-connect VPN"
+                                          Foreground="#CCCCDD"
+                                          FontSize="12"
+                                          VerticalAlignment="Center"
+                                          Checked="AutoConnectVpnCheck_Changed"
+                                          Unchecked="AutoConnectVpnCheck_Changed"/>
+                            </DockPanel>
+                        </StackPanel>
+                    </StackPanel>
                 </Border>
 
                 <!-- Connection card -->
