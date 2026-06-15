@@ -1162,21 +1162,48 @@ public partial class MainWindow : Window
             _isRdpServer = RdpRoleDetector.IsRemoteSession();
 
             var apiDesktops = VirtualDesktopProvider.GetAllDesktops();
+            int totalDesktops = VirtualDesktopHelper.GetTotalDesktopCount();
+
+            // When the VirtualDesktop COM API is unavailable (e.g. after a Windows
+            // build update changes the private COM IIDs, common in RDP sessions),
+            // apiDesktops will be empty even though desktops exist.  Fall back to
+            // reading the system wallpaper from registry/TranscodedWallpaper so
+            // remote peers still see our desktop backgrounds.
+            List<string> desktopNames;
+            List<string> wallpaperThumbnails;
+            List<string> wallpaperColors;
+
+            if (apiDesktops.Length > 0)
+            {
+                desktopNames        = apiDesktops.Select(d => d.DisplayName).ToList();
+                wallpaperThumbnails = apiDesktops.Select(d => EncodeWallpaperThumbnail(d.WallpaperPath) ?? "").ToList();
+                wallpaperColors     = apiDesktops.Select(d => d.BackgroundColor ?? "").ToList();
+            }
+            else
+            {
+                desktopNames = Enumerable.Range(1, totalDesktops).Select(i => $"Desktop {i}").ToList();
+                var (fallbackPath, fallbackColor) = GetFallbackWallpaperInfo();
+                var fallbackThumb = EncodeWallpaperThumbnail(fallbackPath) ?? "";
+                var fallbackColorStr = fallbackColor ?? "";
+                wallpaperThumbnails = Enumerable.Repeat(fallbackThumb, totalDesktops).ToList();
+                wallpaperColors     = Enumerable.Repeat(fallbackColorStr, totalDesktops).ToList();
+            }
+
             var msg = new NetworkMessage
             {
                 Type                = MessageTypes.StateUpdate,
                 MachineName         = _networkManager.LocalMachineName,
                 CurrentDesktop      = VirtualDesktopHelper.GetCurrentDesktopIndex(),
-                TotalDesktops       = VirtualDesktopHelper.GetTotalDesktopCount(),
+                TotalDesktops       = totalDesktops,
                 IsRdpServer         = _isRdpServer,
                 RdpPeers            = _networkManager.ConnectedPeers.ToList(),
                 RdpClientName       = _isRdpServer ? RdpConnectionDetector.GetRdpClientName() : null,
                 DevBoxFriendlyName  = _isRdpServer ? RDP.DevBoxInfoProvider.GetDevBoxFriendlyName() : null,
                 RdpHostedServers    = _isRdpServer ? null
                     : CacheAndReturnRdpMap(),
-                DesktopNames        = apiDesktops.Select(d => d.DisplayName).ToList(),
-                WallpaperThumbnails = apiDesktops.Select(d => EncodeWallpaperThumbnail(d.WallpaperPath) ?? "").ToList(),
-                WallpaperColors     = apiDesktops.Select(d => d.BackgroundColor ?? "").ToList()
+                DesktopNames        = desktopNames,
+                WallpaperThumbnails = wallpaperThumbnails,
+                WallpaperColors     = wallpaperColors
             };
             _ = _networkManager.BroadcastAsync(msg);
 
@@ -1193,6 +1220,61 @@ public partial class MainWindow : Window
                         WallpaperCache.GetOrLoadFromFile(p!);
                 });
         });
+    }
+
+    /// <summary>
+    /// Reads the system wallpaper path and background colour from the registry.
+    /// Used as a fallback when the VirtualDesktop COM API is unavailable.
+    /// Returns (wallpaperPath, backgroundColorHex) — either may be null.
+    /// </summary>
+    private static (string? WallpaperPath, string? BackgroundColor) GetFallbackWallpaperInfo()
+    {
+        string? wallpaperPath = null;
+        bool hasWallpaperEntry = false;
+
+        try
+        {
+            var regPath = Microsoft.Win32.Registry.GetValue(
+                @"HKEY_CURRENT_USER\Control Panel\Desktop", "Wallpaper", null) as string;
+            hasWallpaperEntry = !string.IsNullOrEmpty(regPath);
+            if (hasWallpaperEntry && File.Exists(regPath))
+                wallpaperPath = regPath;
+        }
+        catch { }
+
+        if (wallpaperPath == null && hasWallpaperEntry)
+        {
+            // Wallpaper path configured but file not found — try TranscodedWallpaper.
+            var transcoded = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Microsoft", "Windows", "Themes", "TranscodedWallpaper");
+            if (File.Exists(transcoded))
+                wallpaperPath = transcoded;
+        }
+
+        if (wallpaperPath != null)
+            return (wallpaperPath, null);
+
+        // No wallpaper image — read solid background colour.
+        try
+        {
+            var raw = Microsoft.Win32.Registry.GetValue(
+                @"HKEY_CURRENT_USER\Control Panel\Colors", "Background", null) as string;
+            if (!string.IsNullOrWhiteSpace(raw))
+            {
+                var parts = raw.Split(' ');
+                if (parts.Length >= 3
+                    && byte.TryParse(parts[0], out var r)
+                    && byte.TryParse(parts[1], out var g)
+                    && byte.TryParse(parts[2], out var b))
+                {
+                    return (null, $"#{r:X2}{g:X2}{b:X2}");
+                }
+            }
+        }
+        catch { }
+
+        return (null, null);
     }
 
     private static string? EncodeWallpaperThumbnail(string? path)

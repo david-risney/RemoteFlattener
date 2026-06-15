@@ -47,12 +47,20 @@ internal static class WallpaperCache
         // without hashing the entire string on every call).
         var key = $"b64:{(base64Data.Length > 64 ? base64Data[..64] : base64Data)}|{base64Data.Length}";
 
-        return _cache.GetOrAdd(key, _ =>
+        try
         {
-            var bytes = Convert.FromBase64String(base64Data);
-            using var ms = new MemoryStream(bytes);
-            return DecodeBitmap(ms);
-        });
+            return _cache.GetOrAdd(key, _ =>
+            {
+                var bytes = Convert.FromBase64String(base64Data);
+                using var ms = new MemoryStream(bytes);
+                return DecodeBitmap(ms);
+            });
+        }
+        catch (Exception ex)
+        {
+            Logging.AppLogger.Log($"WallpaperCache: failed to decode base64 wallpaper ({base64Data.Length} chars): {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>Evicts all cached entries (e.g. on settings change).</summary>
