@@ -7,7 +7,7 @@
     .\build.ps1 run       # build + launch
     .\build.ps1 publish   # single-file release exe → publish\
     .\build.ps1 clean     # remove bin/obj/publish
-    .\build.ps1 watch     # poll every 60 s; rebuild + restart on upstream commits or local file changes
+    .\build.ps1 watch     # poll every 60 s; rebuild + restart on upstream commits or local file changes; also registers itself to run at logon
 #>
 param(
     [ValidateSet('build', 'run', 'publish', 'clean', 'watch')]
@@ -63,6 +63,37 @@ function Ensure-DotnetSdk {
         $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
                     [System.Environment]::GetEnvironmentVariable('Path', 'User')
         Write-Host ".NET 8 SDK installed." -ForegroundColor Green
+    }
+}
+
+# ── Ensure the watch loop is registered to run at logon ─────────────────────
+# Adds an HKCU\...\Run entry (idempotent) so `build.ps1 watch` relaunches
+# automatically after every sign-in. Does nothing if already registered.
+function Ensure-StartupRegistration {
+    $runKey    = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $valueName = 'RemoteFlattenerWatch'
+    $scriptPath = $MyInvocation.MyCommand.Path
+    if (-not $scriptPath) { $scriptPath = "$PSScriptRoot\build.ps1" }
+
+    # Prefer pwsh (7+) when present, otherwise fall back to Windows PowerShell.
+    $pwshExe = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+    if (-not $pwshExe) { $pwshExe = (Get-Command powershell -ErrorAction SilentlyContinue).Source }
+    if (-not $pwshExe) { $pwshExe = 'powershell.exe' }
+
+    $command = "`"$pwshExe`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File `"$scriptPath`" watch"
+
+    $existing = (Get-ItemProperty -Path $runKey -Name $valueName -ErrorAction SilentlyContinue).$valueName
+    if ($existing -eq $command) {
+        Write-Host "  Startup entry already registered." -ForegroundColor DarkGray
+        return
+    }
+
+    if (-not (Test-Path $runKey)) { New-Item -Path $runKey -Force | Out-Null }
+    Set-ItemProperty -Path $runKey -Name $valueName -Value $command
+    if ($existing) {
+        Write-Host "  Updated startup entry to run watch at logon." -ForegroundColor Green
+    } else {
+        Write-Host "  Registered watch to run at logon (HKCU\...\Run\$valueName)." -ForegroundColor Green
     }
 }
 
@@ -145,6 +176,9 @@ switch ($Task) {
         Push-Location $PSScriptRoot
         try {
             Write-Host "Watch mode started (polling every $PollSeconds s).  Press Ctrl+C to stop." -ForegroundColor Cyan
+
+            # Make sure the watch loop relaunches automatically after every logon.
+            Ensure-StartupRegistration
 
             # Source files to monitor for local changes; excludes bin\ and obj\ output folders.
             $sourceRoot = "$PSScriptRoot\RemoteFlattener"
