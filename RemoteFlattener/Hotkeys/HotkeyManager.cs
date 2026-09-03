@@ -81,6 +81,8 @@ public sealed class HotkeyManager : IDisposable
 
     /// <summary>Raised on the thread pool when Win+Tab is pressed. UI updates must be dispatched.</summary>
     public event Action? WinTabPressed;
+    /// <summary>When false, Win+Tab keystrokes are passed through instead of intercepted.</summary>
+    public bool InterceptWinTab { get; set; } = true;
     /// <summary>Raised when Ctrl+Win+Left was pressed and the desktop did not change (already leftmost).</summary>
     public event Action? SwitchDesktopLeft;
     /// <summary>Raised when Ctrl+Win+Right was pressed and the desktop did not change (already rightmost).</summary>
@@ -129,9 +131,11 @@ public sealed class HotkeyManager : IDisposable
             switch (DecideAction(nCode, isInjected, vk, isDown, isUp, IsWinDown(), IsCtrlDown()))
             {
                 case HotkeyAction.EatTabUp:
+                    if (!InterceptWinTab) break;
                     return new IntPtr(1);
 
                 case HotkeyAction.WinTab:
+                    if (!InterceptWinTab) break;
                     // Eat Win+Tab and show our overlay.  Inject a decoy key first so Windows
                     // doesn't treat the subsequent Win keyup as a Start menu shortcut.
                     AppLogger.Log("Hotkey: Win+Tab → toggling overlay.");

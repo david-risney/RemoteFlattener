@@ -431,17 +431,22 @@ public partial class MainWindow : Window
             _stateTimer = new Timer(_ => BroadcastOurState(), null, 1_000, 5_000);
         }
 
-        // Install keyboard hook — Win+Tab on all machines; switch hotkeys only on server.
+        // Install keyboard hook.
+        // On the RDP server, Win+Tab keypresses are forwarded through the RDP session
+        // from the client, so hooking them would open a duplicate overlay.  Only hook
+        // Ctrl+Win+Left/Right (for broadcasting desktop switches to peers).
+        // On the client, hook Win+Tab to open the overlay.
         _hotkeyManager = new HotkeyManager();
-        _hotkeyManager.WinTabPressed += OnWinTabPressed;
         if (_isRdpServer)
         {
+            _hotkeyManager.InterceptWinTab = false;
             _hotkeyManager.SwitchDesktopLeft  += OnSendSwitchLeft;
             _hotkeyManager.SwitchDesktopRight += OnSendSwitchRight;
-            AppLogger.Log("Hotkey hook installed (Win+Tab overlay + Ctrl+Win+Left/Right broadcast).");
+            AppLogger.Log("Hotkey hook installed (Ctrl+Win+Left/Right broadcast; Win+Tab suppressed — RDP server).");
         }
         else
         {
+            _hotkeyManager.WinTabPressed += OnWinTabPressed;
             AppLogger.Log("Running as RDP Client — hotkey hook installed for Win+Tab overlay only.");
         }
         _hotkeyManager.Install();
