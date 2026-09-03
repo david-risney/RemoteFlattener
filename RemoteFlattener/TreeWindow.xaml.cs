@@ -864,6 +864,15 @@ public partial class TreeWindow : Window
                 AppLogger.Log($"DesktopMap action: switching root ({_rdpDesktopMapOwner}) to desktop {localIdx} (hosts {normalizedName})");
                 _onSwitchToDesktop(_rdpDesktopMapOwner, localIdx);
             }
+            // When selecting the server's own (local) desktop, also switch the hosting
+            // client to the desktop that has the mstsc window so the user can see
+            // the result through the RDP session.
+            if (isLocal && _localIsRdpServer && _rdpDesktopMap.TryGetValue(
+                    MachineInfo.NormalizeHostname(_localMachineName), out var clientIdx))
+            {
+                AppLogger.Log($"DesktopMap action: switching hosting client ({_rdpDesktopMapOwner}) to desktop {clientIdx} (hosts local server)");
+                _onSwitchToDesktop(_rdpDesktopMapOwner, clientIdx);
+            }
             AppLogger.Log($"DesktopMap action: switching {machineName} to desktop {desktopIndex}");
             _onSwitchToDesktop(machineName, desktopIndex);
             // Always dismiss the overlay after a selection.
