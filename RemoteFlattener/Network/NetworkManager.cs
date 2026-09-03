@@ -291,6 +291,10 @@ public sealed class NetworkManager : IDisposable
 
     private async Task OutgoingLoopAsync(string machineName, string connectionAddress, int port, CancellationToken ct)
     {
+        bool wasConnected = false;
+        const int ReconnectDelayMs = 10_000;
+        const int ConnectedPollMs  = 10_000;
+
         while (!ct.IsCancellationRequested)
         {
             // Skip if already connected (may have been initiated by the remote side first).
@@ -298,7 +302,8 @@ public sealed class NetworkManager : IDisposable
             // short name ("SERVER") stored in _connections after handshake normalization.
             if (_connections.ContainsKey(MachineInfo.NormalizeHostname(machineName)))
             {
-                await DelayOrCancel(5_000, ct);
+                wasConnected = true;
+                await DelayOrCancel(ConnectedPollMs, ct);
                 continue;
             }
 
@@ -316,14 +321,24 @@ public sealed class NetworkManager : IDisposable
                 _logger.Log($"Outgoing: TCP connected to {displayTarget}.  Starting handshake.");
                 // HandleConnectionAsync will register in _connections; when it exits, loop retries.
                 await HandleConnectionAsync(client, outgoing: true, remoteMachineHint: machineName, ct);
+                // Connection was established then dropped — retry after a delay.
+                wasConnected = true;
+                _logger.Log($"Outgoing: connection to {displayTarget} lost. Will retry in {ReconnectDelayMs / 1000} s.");
+                await DelayOrCancel(ReconnectDelayMs, ct);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)
             {
-                _logger.Log($"Outgoing: failed to connect to {displayTarget}: {ex.Message}. Retrying in 5 s.");
+                if (!wasConnected)
+                {
+                    // First attempt failed — peer will connect to us via the listener.
+                    _logger.Log($"Outgoing: failed to connect to {displayTarget}: {ex.Message}. Peer will connect to us when ready.");
+                    return;
+                }
+                // Reconnection attempt after a previous connection — retry with delay.
+                _logger.Log($"Outgoing: failed to reconnect to {displayTarget}: {ex.Message}. Retrying in {ReconnectDelayMs / 1000} s.");
+                await DelayOrCancel(ReconnectDelayMs, ct);
             }
-
-            await DelayOrCancel(5_000, ct);
         }
     }
 

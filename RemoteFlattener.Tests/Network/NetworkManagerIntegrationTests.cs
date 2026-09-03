@@ -360,7 +360,7 @@ public class NetworkManagerIntegrationTests : IDisposable
 
         await WaitForAsync(
             () => nodeA.ConnectedPeers.Contains("NODE-B"),
-            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(20),
             "A reconnects to restarted B");
     }
 
@@ -385,7 +385,7 @@ public class NetworkManagerIntegrationTests : IDisposable
         nodeB2.MessageReceived += (_, msg) => received.Add(msg);
         nodeB2.Start("pw", Array.Empty<(string, string, int)>());
 
-        await WaitForAsync(() => nodeA.ConnectedPeers.Contains("NODE-B"), TimeSpan.FromSeconds(10), "reconnected");
+        await WaitForAsync(() => nodeA.ConnectedPeers.Contains("NODE-B"), TimeSpan.FromSeconds(20), "reconnected");
 
         await nodeA.BroadcastAsync(new NetworkMessage { Type = MessageTypes.StateUpdate, CurrentDesktop = 5 });
         await WaitForAsync(() => received.Count > 0, TimeSpan.FromSeconds(5), "message after reconnect");
@@ -1114,7 +1114,7 @@ public class NetworkManagerIntegrationTests : IDisposable
         // A and C should reconnect to B (their outgoing loops retry).
         await WaitForAsync(
             () => nodeB2.ConnectedPeers.Count() >= 2,
-            TimeSpan.FromSeconds(15),
+            TimeSpan.FromSeconds(25),
             "mesh heals — B2 has both peers");
 
         // Verify messages flow end-to-end again.
