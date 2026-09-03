@@ -76,6 +76,52 @@ public static class VirtualDesktopSwitcher
         Send(VK_RIGHT, hwnd);
     }
 
+    /// <summary>Switches to the desktop at the given 1-based <paramref name="targetIndex"/>.
+    /// Tries the VirtualDesktop COM API first; falls back to SendInput if unavailable.</summary>
+    public static void SwitchToIndex(int targetIndex, IntPtr hwnd)
+    {
+        if (VirtualDesktopProvider.IsAvailable && VirtualDesktopProvider.SwitchToIndex(targetIndex))
+        {
+            AppLogger.Log($"SwitchToIndex({targetIndex}) via VirtualDesktop API.");
+            return;
+        }
+
+        // Fallback: read the current index from the registry and navigate with
+        // Ctrl+Win+Left/Right keypresses.
+        var currentIndex = VirtualDesktopHelper.GetCurrentDesktopIndex();
+        var delta = targetIndex - currentIndex;
+        if (delta == 0)
+        {
+            AppLogger.Log($"SwitchToIndex({targetIndex}) — already on target desktop.");
+            return;
+        }
+
+        AppLogger.Log($"SwitchToIndex({targetIndex}) via SendInput fallback (current={currentIndex}, delta={delta}).");
+        var arrowVk = delta > 0 ? VK_RIGHT : VK_LEFT;
+        var steps = Math.Abs(delta);
+
+        if (hwnd != IntPtr.Zero)
+            ForceForeground(hwnd);
+
+        for (int i = 0; i < steps; i++)
+        {
+            var inputs = new INPUT[]
+            {
+                MakeKey(VK_LCONTROL, false),
+                MakeKey(VK_LWIN,     false),
+                MakeKey(arrowVk,     false),
+                MakeKey(arrowVk,     true),
+                MakeKey(VK_LWIN,     true),
+                MakeKey(VK_LCONTROL, true),
+            };
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+
+            // Small delay between keystrokes so Windows registers each desktop switch.
+            if (i < steps - 1)
+                System.Threading.Thread.Sleep(100);
+        }
+    }
+
     private static void Send(ushort arrowVk, IntPtr hwnd)
     {
         if (hwnd != IntPtr.Zero)

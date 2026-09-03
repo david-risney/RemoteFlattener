@@ -648,8 +648,7 @@ public partial class MainWindow : Window
 
                 case MessageTypes.SwitchToDesktop:
                     AppLogger.Log($"Received {MessageTypes.SwitchToDesktop} ({msg.CurrentDesktop}) from {machineName}.");
-                    if (!VirtualDesktopProvider.SwitchToIndex(msg.CurrentDesktop))
-                        AppLogger.Log("VirtualDesktop API unavailable — cannot switch to specific desktop index.");
+                    VirtualDesktopSwitcher.SwitchToIndex(msg.CurrentDesktop, new WindowInteropHelper(this).Handle);
                     break;
             }
         });
@@ -763,7 +762,7 @@ public partial class MainWindow : Window
         if (machineName.Equals(LocalName, StringComparison.OrdinalIgnoreCase))
         {
             AppLogger.Log($"Switch to desktop {desktopIndex} on local machine.");
-            VirtualDesktopProvider.SwitchToIndex(desktopIndex);
+            VirtualDesktopSwitcher.SwitchToIndex(desktopIndex, new WindowInteropHelper(this).Handle);
         }
         else
         {
