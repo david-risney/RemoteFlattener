@@ -67,11 +67,11 @@ function Ensure-DotnetSdk {
 }
 
 # ── Ensure the watch loop is registered to run at logon ─────────────────────
-# Adds an HKCU\...\Run entry (idempotent) so `build.ps1 watch` relaunches
-# automatically after every sign-in. Does nothing if already registered.
+# Adds a Scheduled Task logon trigger (idempotent) so `build.ps1 watch` relaunches
+# automatically after every sign-in.  Uses Task Scheduler instead of HKCU\...\Run
+# for reliable startup with working directory and delayed-start support.
 function Ensure-StartupRegistration {
-    $runKey    = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-    $valueName = 'RemoteFlattenerWatch'
+    $taskName   = 'RemoteFlattenerWatch'
     $scriptPath = $MyInvocation.MyCommand.Path
     if (-not $scriptPath) { $scriptPath = "$PSScriptRoot\build.ps1" }
 
@@ -80,20 +80,35 @@ function Ensure-StartupRegistration {
     if (-not $pwshExe) { $pwshExe = (Get-Command powershell -ErrorAction SilentlyContinue).Source }
     if (-not $pwshExe) { $pwshExe = 'powershell.exe' }
 
-    $command = "`"$pwshExe`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File `"$scriptPath`" watch"
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File `"$scriptPath`" watch"
 
-    $existing = (Get-ItemProperty -Path $runKey -Name $valueName -ErrorAction SilentlyContinue).$valueName
-    if ($existing -eq $command) {
-        Write-Host "  Startup entry already registered." -ForegroundColor DarkGray
-        return
+    # Check if the task already exists with the correct action.
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        $act = $existing.Actions | Select-Object -First 1
+        if ($act.Execute -eq $pwshExe -and $act.Arguments -eq $arguments) {
+            Write-Host "  Startup task already registered." -ForegroundColor DarkGray
+            return
+        }
     }
 
-    if (-not (Test-Path $runKey)) { New-Item -Path $runKey -Force | Out-Null }
-    Set-ItemProperty -Path $runKey -Name $valueName -Value $command
-    if ($existing) {
-        Write-Host "  Updated startup entry to run watch at logon." -ForegroundColor Green
-    } else {
-        Write-Host "  Registered watch to run at logon (HKCU\...\Run\$valueName)." -ForegroundColor Green
+    $action   = New-ScheduledTaskAction -Execute $pwshExe -Argument $arguments -WorkingDirectory $PSScriptRoot
+    $trigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                    -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+                           -Settings $settings -Force `
+                           -Description 'Auto-build and run RemoteFlattener on logon' | Out-Null
+
+    Write-Host "  Registered watch to run at logon (Task Scheduler: $taskName)." -ForegroundColor Green
+
+    # Clean up legacy HKCU\...\Run entry if present.
+    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $legacyValue = (Get-ItemProperty -Path $runKey -Name $taskName -ErrorAction SilentlyContinue).$taskName
+    if ($legacyValue) {
+        Remove-ItemProperty -Path $runKey -Name $taskName -ErrorAction SilentlyContinue
+        Write-Host "  Removed legacy Run registry entry." -ForegroundColor DarkGray
     }
 }
 
