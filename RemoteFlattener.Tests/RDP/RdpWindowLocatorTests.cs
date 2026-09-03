@@ -225,7 +225,7 @@ public class RdpWindowLocatorTests
     [Fact]
     public void MatchMsrdcTitle_FqdnInNames_MatchesShortTitle()
     {
-        // Title is short name, names list has FQDN — NormalizeHostname makes it match.
+        // Title is short name, names list has FQDN — MachineName canonicalization makes it match.
         var result = RdpWindowLocator.MatchMsrdcTitle(
             "DAVRIS-0", ["davris-0.corp.microsoft.com"]);
         Assert.Equal("davris-0.corp.microsoft.com", result);

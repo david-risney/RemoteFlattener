@@ -216,11 +216,11 @@ public static class RdpWindowLocator
     /// </summary>
     internal static string? MatchMsrdcTitle(string windowTitle, IEnumerable<string> names)
     {
-        var normalizedTitle = MachineInfo.NormalizeHostname(windowTitle);
+        var normalizedTitle = MachineName.From(windowTitle).Canonical;
 
         foreach (var name in names)
         {
-            var normalizedName = MachineInfo.NormalizeHostname(name);
+            var normalizedName = MachineName.From(name).Canonical;
             if (string.IsNullOrEmpty(normalizedName)) continue;
 
             // Exact match (title IS the machine name).
@@ -237,7 +237,7 @@ public static class RdpWindowLocator
         // false positives like "DAVRIS-1" matching inside "davris-10".
         foreach (var name in names)
         {
-            var normalizedName = MachineInfo.NormalizeHostname(name);
+            var normalizedName = MachineName.From(name).Canonical;
             if (string.IsNullOrEmpty(normalizedName)) continue;
 
             var idx = windowTitle.IndexOf(normalizedName, StringComparison.OrdinalIgnoreCase);
@@ -391,12 +391,12 @@ public static class RdpWindowLocator
         const string sep = " - ";
         var sepIdx = windowTitle.IndexOf(sep, StringComparison.Ordinal);
         if (sepIdx <= 0) return null;
-        var titleHost = MachineInfo.NormalizeHostname(windowTitle[..sepIdx]);
+        var titleHost = MachineName.From(windowTitle[..sepIdx]).Canonical;
         if (string.IsNullOrEmpty(titleHost)) return null;
 
         foreach (var name in names)
         {
-            if (MachineInfo.NormalizeHostname(name).Equals(titleHost, StringComparison.OrdinalIgnoreCase))
+            if (MachineName.From(name).Matches(titleHost))
                 return name;
         }
         return null;

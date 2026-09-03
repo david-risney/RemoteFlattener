@@ -15,7 +15,7 @@ public sealed record NetworkManagerConfig
     /// The machine name this node will identify as.
     /// Default: the local machine's normalized hostname.
     /// </summary>
-    public string LocalMachineName { get; init; } = MachineInfo.NormalizeHostname(Environment.MachineName);
+    public string LocalMachineName { get; init; } = MachineName.From(Environment.MachineName).Canonical;
 
     /// <summary>Logger used for diagnostic output. Default: <see cref="AppLoggerAdapter"/>.</summary>
     public INetworkLogger Logger { get; init; } = AppLoggerAdapter.Instance;

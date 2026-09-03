@@ -16,7 +16,7 @@ namespace RemoteFlattener.Network;
 /// <summary>Represents an authenticated, active connection to a remote peer.</summary>
 internal sealed class PeerConnection : IDisposable
 {
-    public required string MachineName { get; init; }
+    public required MachineName Machine { get; init; }
     public required TcpClient Client { get; init; }
     public required StreamWriter Writer { get; init; }
     /// <summary>Guards Writer so concurrent broadcasts don't interleave JSON lines.</summary>
@@ -77,7 +77,7 @@ public sealed class NetworkManager : IDisposable
 
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
-    private readonly ConcurrentDictionary<string, PeerConnection> _connections = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<MachineName, PeerConnection> _connections = new();
 
     // Rolling set of message IDs already processed — prevents relay loops.
     private readonly object _seenLock = new();
@@ -94,7 +94,7 @@ public sealed class NetworkManager : IDisposable
 
     /// <summary>Machine names of currently authenticated, connected peers.</summary>
     public IEnumerable<string> ConnectedPeers =>
-        _connections.Values.Select(c => c.MachineName);
+        _connections.Values.Select(c => c.Machine.Canonical);
 
     /// <summary>
     /// Returns a mapping of normalized peer machine name → remote IP address string
@@ -109,7 +109,7 @@ public sealed class NetworkManager : IDisposable
             {
                 var ep = conn.Client.Client.RemoteEndPoint as System.Net.IPEndPoint;
                 if (ep != null)
-                    result[conn.MachineName] = ep.Address.ToString();
+                    result[conn.Machine.Canonical] = ep.Address.ToString();
             }
             catch { /* socket may be closed */ }
         }
@@ -132,7 +132,12 @@ public sealed class NetworkManager : IDisposable
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => ListenLoopAsync(_cts.Token));
         foreach (var machine in _peerMachines)
-            _ = Task.Run(() => OutgoingLoopAsync(machine, _cts.Token));
+        {
+            var target = new PeerTarget(
+                MachineName.From(machine),
+                new MachineEndpoint(machine, Port));
+            _ = Task.Run(() => OutgoingLoopAsync(target, _cts.Token));
+        }
     }
 
     /// <summary>
@@ -146,7 +151,12 @@ public sealed class NetworkManager : IDisposable
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => ListenLoopAsync(_cts.Token));
         foreach (var (machineName, host, port) in peerEndpoints)
-            _ = Task.Run(() => OutgoingLoopAsync(machineName, host, port, _cts.Token));
+        {
+            var target = new PeerTarget(
+                MachineName.From(machineName),
+                new MachineEndpoint(host, port));
+            _ = Task.Run(() => OutgoingLoopAsync(target, _cts.Token));
+        }
     }
 
     /// <summary>
@@ -157,7 +167,7 @@ public sealed class NetworkManager : IDisposable
         peerMachines
             .Select(m => m.Trim())
             .Where(m => !string.IsNullOrEmpty(m) &&
-                        !m.Equals(localMachineName, StringComparison.OrdinalIgnoreCase))
+                        !MachineName.From(m).HasSameObservedValue(localMachineName))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -170,7 +180,7 @@ public sealed class NetworkManager : IDisposable
         {
             try
             {
-                PeerDisconnected?.Invoke(conn.MachineName);
+                PeerDisconnected?.Invoke(conn.Machine.Canonical);
                 conn.Dispose();
             }
             catch { }
@@ -195,19 +205,20 @@ public sealed class NetworkManager : IDisposable
     /// </summary>
     public async Task SendToPeerAsync(string machineName, NetworkMessage message)
     {
-        message.TargetMachine = machineName;
+        var target = MachineName.From(machineName);
+        message.TargetMachine = target.Canonical;
         PrepareForSend(message);
         MarkSeen(message.MessageId!);
 
-        if (_connections.TryGetValue(machineName, out var direct))
+        if (_connections.TryGetValue(target, out var direct))
         {
-            _logger.Log($"Sending {message.Type} directly to {machineName}.");
+            _logger.Log($"Sending {message.Type} directly to {target.Canonical}.");
             await SendLineAsync(direct, message.Serialize());
         }
         else
         {
             // No direct link — flood all peers; one of them will relay it.
-            _logger.Log($"No direct link to '{machineName}'; flooding {_connections.Count} peer(s) to relay.");
+            _logger.Log($"No direct link to '{target.Canonical}'; flooding {_connections.Count} peer(s) to relay.");
             var json = message.Serialize();
             var tasks = _connections.Values
                 .Select(c => SendLineAsync(c, json))
@@ -272,24 +283,21 @@ public sealed class NetworkManager : IDisposable
     public void ConnectToPeer(string machineName, string connectionAddress, int? port = null)
     {
         if (_cts == null) return; // network not started
-        var normalizedName = MachineInfo.NormalizeHostname(machineName);
+        var peerName = MachineName.From(machineName);
         // Static peer list already has a loop for this machine — don't duplicate.
-        if (_peerMachines.Any(p => p.Equals(normalizedName, StringComparison.OrdinalIgnoreCase)))
+        if (_peerMachines.Any(p => peerName.CanonicalEqualsObservedValue(p)))
             return;
-        if (_connections.ContainsKey(normalizedName)) return;
+        if (_connections.ContainsKey(peerName)) return;
         _logger.Log($"ConnectToPeer: starting connector for {machineName} via {connectionAddress}.");
-        _ = Task.Run(() => OutgoingLoopAsync(machineName, connectionAddress, port ?? Port, _cts.Token));
+        var target = new PeerTarget(
+            peerName,
+            new MachineEndpoint(connectionAddress, port ?? Port));
+        _ = Task.Run(() => OutgoingLoopAsync(target, _cts.Token));
     }
 
     // ── Outgoing connector (with reconnect) ──────────────────────────────────
 
-    private async Task OutgoingLoopAsync(string machine, CancellationToken ct)
-        => await OutgoingLoopAsync(machine, machine, Port, ct);
-
-    private async Task OutgoingLoopAsync(string machineName, string connectionAddress, CancellationToken ct)
-        => await OutgoingLoopAsync(machineName, connectionAddress, Port, ct);
-
-    private async Task OutgoingLoopAsync(string machineName, string connectionAddress, int port, CancellationToken ct)
+    private async Task OutgoingLoopAsync(PeerTarget target, CancellationToken ct)
     {
         bool wasConnected = false;
         const int ReconnectDelayMs = 10_000;
@@ -300,7 +308,7 @@ public sealed class NetworkManager : IDisposable
             // Skip if already connected (may have been initiated by the remote side first).
             // Normalize the machine name so that FQDNs (e.g. "server.corp.com") match the
             // short name ("SERVER") stored in _connections after handshake normalization.
-            if (_connections.ContainsKey(MachineInfo.NormalizeHostname(machineName)))
+            if (_connections.ContainsKey(target.Name))
             {
                 wasConnected = true;
                 await DelayOrCancel(ConnectedPollMs, ct);
@@ -308,19 +316,19 @@ public sealed class NetworkManager : IDisposable
             }
 
             // Log differently when connecting via a separate address (e.g. IP for auto-detected peers).
-            bool viaIp = !connectionAddress.Equals(machineName, StringComparison.OrdinalIgnoreCase);
+            bool viaIp = !target.Endpoint.Host.Equals(target.Name.Value, StringComparison.OrdinalIgnoreCase);
             string displayTarget = viaIp
-                ? $"{machineName} via {connectionAddress}:{port}"
-                : $"{machineName}:{port}";
+                ? $"{target.Name.Value} via {target.Endpoint}"
+                : $"{target.Name.Value}:{target.Endpoint.Port}";
 
             _logger.Log($"Outgoing: attempting connection to {displayTarget}...");
             try
             {
                 var client = new TcpClient();
-                await client.ConnectAsync(connectionAddress, port, ct);
+                await client.ConnectAsync(target.Endpoint.Host, target.Endpoint.Port, ct);
                 _logger.Log($"Outgoing: TCP connected to {displayTarget}.  Starting handshake.");
                 // HandleConnectionAsync will register in _connections; when it exits, loop retries.
-                await HandleConnectionAsync(client, outgoing: true, remoteMachineHint: machineName, ct);
+                await HandleConnectionAsync(client, outgoing: true, remoteMachineHint: target.Name.Value, ct);
                 // Connection was established then dropped — retry after a delay.
                 wasConnected = true;
                 _logger.Log($"Outgoing: connection to {displayTarget} lost. Will retry in {ReconnectDelayMs / 1000} s.");
@@ -347,7 +355,7 @@ public sealed class NetworkManager : IDisposable
     private async Task HandleConnectionAsync(
         TcpClient client, bool outgoing, string? remoteMachineHint, CancellationToken ct)
     {
-        string? remoteMachine = null;
+        MachineName? remoteMachine = null;
         bool registered = false;
         var stream = client.GetStream();
         var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
@@ -380,7 +388,7 @@ public sealed class NetworkManager : IDisposable
                     return;
                 }
 
-                remoteMachine = MachineInfo.NormalizeHostname(remoteMachineHint ?? ack.MachineName);
+                remoteMachine = MachineName.From(remoteMachineHint ?? ack.MachineName);
             }
             else
             {
@@ -402,7 +410,7 @@ public sealed class NetworkManager : IDisposable
                     return;
                 }
 
-                remoteMachine = MachineInfo.NormalizeHostname(hello.MachineName);
+                remoteMachine = MachineName.From(hello.MachineName);
                 var ack = BuildHello();
                 ack.Type = MessageTypes.HelloAck;
                 await writer.WriteAsync(ack.Serialize());
@@ -413,17 +421,17 @@ public sealed class NetworkManager : IDisposable
             EnableKeepAlive(client);
 
             // Register connection; drop duplicate (first-in wins).
-            var conn = new PeerConnection { MachineName = remoteMachine, Client = client, Writer = writer };
-            if (!_connections.TryAdd(remoteMachine, conn))
+            var conn = new PeerConnection { Machine = remoteMachine.Value, Client = client, Writer = writer };
+            if (!_connections.TryAdd(remoteMachine.Value, conn))
             {
-                _logger.Log($"Duplicate connection for {remoteMachine} — dropping.");
+                _logger.Log($"Duplicate connection for {remoteMachine.Value.Canonical} — dropping.");
                 conn.Dispose();
                 return;
             }
             registered = true;
 
-            _logger.Log($"Peer {remoteMachine} authenticated and connected ({(outgoing ? "outgoing" : "incoming")}).");
-            PeerConnected?.Invoke(remoteMachine);
+            _logger.Log($"Peer {remoteMachine.Value.Canonical} authenticated and connected ({(outgoing ? "outgoing" : "incoming")}).");
+            PeerConnected?.Invoke(remoteMachine.Value.Canonical);
 
             // Read messages until the connection closes.
             string? line;
@@ -445,12 +453,14 @@ public sealed class NetworkManager : IDisposable
 
                 // Should this node act on the message?
                 bool isForMe = msg.TargetMachine == null ||
-                               msg.TargetMachine.Equals(LocalMachineName, StringComparison.OrdinalIgnoreCase);
+                               MachineName.From(msg.TargetMachine)
+                                   .CanonicalEqualsObservedValue(LocalMachineName);
 
                 if (isForMe)
                 {
-                    _logger.Log($"Received {msg.Type} from {remoteMachine} (origin: {msg.OriginMachine ?? remoteMachine}).");
-                    MessageReceived?.Invoke(remoteMachine, msg);
+                    var remoteName = remoteMachine.Value.Canonical;
+                    _logger.Log($"Received {msg.Type} from {remoteName} (origin: {msg.OriginMachine ?? remoteName}).");
+                    MessageReceived?.Invoke(remoteName, msg);
                 }
 
                 // Relay to all other directly connected peers (mesh forwarding).
@@ -458,7 +468,7 @@ public sealed class NetworkManager : IDisposable
                 {
                     var relayJson = msg.Serialize();
                     var relay = _connections.Values
-                        .Where(c => !c.MachineName.Equals(remoteMachine, StringComparison.OrdinalIgnoreCase))
+                        .Where(c => c.Machine != remoteMachine.Value)
                         .Select(c => SendLineAsync(c, relayJson))
                         .ToArray();
                     if (relay.Length > 0)
@@ -467,16 +477,16 @@ public sealed class NetworkManager : IDisposable
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { _logger.Log($"Connection error [{remoteMachine ?? remoteMachineHint ?? "unknown"}]: {ex.Message}"); }
+        catch (Exception ex) { _logger.Log($"Connection error [{remoteMachine?.Canonical ?? remoteMachineHint ?? "unknown"}]: {ex.Message}"); }
         finally
         {
             reader.Dispose();
             // Only remove from _connections if this handler was the one that registered.
-            if (registered && remoteMachine != null && _connections.TryRemove(remoteMachine, out var removed))
+            if (registered && remoteMachine != null && _connections.TryRemove(remoteMachine.Value, out var removed))
             {
                 removed.Dispose();
-                _logger.Log($"Peer {remoteMachine} disconnected.");
-                PeerDisconnected?.Invoke(remoteMachine);
+                _logger.Log($"Peer {remoteMachine.Value.Canonical} disconnected.");
+                PeerDisconnected?.Invoke(remoteMachine.Value.Canonical);
             }
             else
             {

@@ -32,10 +32,10 @@ public static class TreeNestingHelper
             return new Dictionary<int, List<MachineInfo>>();
 
         return allMachines
-            .Where(m => !m.MachineName.Equals(localMachineName, StringComparison.OrdinalIgnoreCase) &&
+            .Where(m => !MachineName.From(m.MachineName).HasSameObservedValue(localMachineName) &&
                         !alreadyShown.Contains(m.MachineName) &&
-                        hostedMap.ContainsKey(MachineInfo.NormalizeHostname(m.MachineName)))
-            .GroupBy(m => hostedMap[MachineInfo.NormalizeHostname(m.MachineName)])
+                        hostedMap.ContainsKey(MachineName.From(m.MachineName).Canonical))
+            .GroupBy(m => hostedMap[MachineName.From(m.MachineName).Canonical])
             .ToDictionary(g => g.Key, g => g.ToList());
     }
 
@@ -51,7 +51,7 @@ public static class TreeNestingHelper
         var hostedMap = client.RdpHostedServers;
         if (hostedMap == null) return -1;
 
-        var normalizedLocal = MachineInfo.NormalizeHostname(localMachineName);
+        var normalizedLocal = MachineName.From(localMachineName).Canonical;
         return hostedMap.TryGetValue(normalizedLocal, out var idx) ? idx : -1;
     }
 
@@ -82,7 +82,7 @@ public static class TreeNestingHelper
         var all = new List<MachineInfo> { localMachineInfo };
         all.AddRange(peers.Where(p => p.IsConnected || p.IsIndirect ||
             (p.IsRdpServer && localRdpHostedServers.ContainsKey(
-                MachineInfo.NormalizeHostname(p.MachineName)))));
+                MachineName.From(p.MachineName).Canonical))));
 
         var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         shown.Add(localMachineName);
@@ -94,12 +94,11 @@ public static class TreeNestingHelper
             // Server path: find the hosting client.
             var hostingClient = peers.FirstOrDefault(p =>
                 !p.IsRdpServer &&
-                p.RdpHostedServers.ContainsKey(MachineInfo.NormalizeHostname(localMachineName)));
+                p.RdpHostedServers.ContainsKey(MachineName.From(localMachineName).Canonical));
             hostingClient ??= peers.FirstOrDefault(p =>
                 !p.IsRdpServer &&
                 p.RdpPeers.Any(rp =>
-                    MachineInfo.NormalizeHostname(rp)
-                        .Equals(MachineInfo.NormalizeHostname(localMachineName), StringComparison.OrdinalIgnoreCase)));
+                    MachineName.From(rp).Equals(MachineName.From(localMachineName))));
             hostingClient ??= peers.FirstOrDefault(p =>
                 !p.IsRdpServer && (p.IsConnected || p.IsIndirect));
 

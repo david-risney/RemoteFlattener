@@ -14,7 +14,7 @@ The matching pipeline has two steps, both designed for traditional `mstsc.exe` R
    **port 3389**. On a server, the client's IP appears as the remote end of an inbound
    connection. On a client, the server's IP appears as the remote end of an outbound
    connection. Each IP is reverse-DNS resolved and normalized to a short hostname
-   (first DNS label, uppercased) via `MachineInfo.NormalizeHostname`.
+   (first DNS label, uppercased) via `MachineName.From(...).Canonical`.
 
 2. **Window-to-desktop mapping** (`RdpWindowLocator`): On the **client** machine,
    enumerates all visible `mstsc.exe` windows (matched by PID from
@@ -149,7 +149,7 @@ as an RDP peer by the client (or vice versa).
 On the **server (DevBox) side**, the following are available:
 
 1. **`CLIENTNAME` environment variable** — set to the client's short machine name.
-   This is the same format `MachineInfo.NormalizeHostname` produces.
+   This is the same format `MachineName.From(...).Canonical` produces.
 2. **`IsDevBox` environment variable** — set to `True`, reliably identifies Cloud DevBox.
 3. **DevBox friendly name** — extractable from `appsettings.Production.json` in the
    DevBox Agent directory. The friendly name is the last `:` segment of

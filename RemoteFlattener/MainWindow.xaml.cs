@@ -745,7 +745,7 @@ public partial class MainWindow : Window
         _treeWindow?.Close();
         _treeWindow = null;
 
-        if (machineName.Equals(LocalName, StringComparison.OrdinalIgnoreCase))
+        if (MachineName.From(machineName).HasSameObservedValue(LocalName))
         {
             AppLogger.Log("Task View requested for local machine.");
             InvokeTaskView();
@@ -759,7 +759,7 @@ public partial class MainWindow : Window
 
     private void RequestSwitchToDesktop(string machineName, int desktopIndex)
     {
-        if (machineName.Equals(LocalName, StringComparison.OrdinalIgnoreCase))
+        if (MachineName.From(machineName).HasSameObservedValue(LocalName))
         {
             AppLogger.Log($"Switch to desktop {desktopIndex} on local machine.");
             VirtualDesktopSwitcher.SwitchToIndex(desktopIndex, new WindowInteropHelper(this).Handle);
@@ -829,7 +829,7 @@ public partial class MainWindow : Window
         foreach (var peer in info.RdpPeers)
         {
             if (string.IsNullOrWhiteSpace(peer)) continue;
-            if (peer.Equals(LocalName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (MachineName.From(peer).HasSameObservedValue(LocalName)) continue;
             var peerInfo = GetOrAdd(peer);
             // Only mark as indirect if not already directly connected.
             if (!peerInfo.IsConnected)
@@ -843,9 +843,9 @@ public partial class MainWindow : Window
     /// </summary>
     private MachineInfo? FindPeer(string machineName)
     {
-        var normalized = MachineInfo.NormalizeHostname(machineName);
+        var normalized = MachineName.From(machineName).Canonical;
         return Connections.FirstOrDefault(m =>
-            MachineInfo.NormalizeHostname(m.MachineName).Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            MachineName.From(m.MachineName).Matches(normalized));
     }
 
     private MachineInfo GetOrAdd(string machineName)
@@ -869,7 +869,7 @@ public partial class MainWindow : Window
             return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         return new Dictionary<string, int>(
             raw.ToDictionary(
-                kv => MachineInfo.NormalizeHostname(kv.Key),
+                kv => MachineName.From(kv.Key).Canonical,
                 kv => kv.Value),
             StringComparer.OrdinalIgnoreCase);
     }
@@ -975,7 +975,7 @@ public partial class MainWindow : Window
         // Find RDP-server peers not already accounted for in the mstsc-based map.
         var serverPeers = peers
             .Where(p => p.IsRdpServer &&
-                        !rdpDesktopMap.ContainsKey(MachineInfo.NormalizeHostname(p.MachineName)))
+                        !rdpDesktopMap.ContainsKey(MachineName.From(p.MachineName).Canonical))
             .ToList();
 
         AppLogger.Log($"MergeMsrdc: {serverPeers.Count} server peer(s) not yet mapped " +
@@ -1001,11 +1001,11 @@ public partial class MainWindow : Window
         // e.g. window "davris-0" matches peer DAVRIS-0.
         foreach (var peer in serverPeers)
         {
-            var normalizedPeerName = MachineInfo.NormalizeHostname(peer.MachineName);
+            var normalizedPeerName = MachineName.From(peer.MachineName).Canonical;
             foreach (var kv in msrdcMap)
             {
                 if (pairedWindows.Contains(kv.Key)) continue;
-                var normalizedTitle = MachineInfo.NormalizeHostname(kv.Key);
+                var normalizedTitle = MachineName.From(kv.Key).Canonical;
                 if (normalizedTitle.Equals(normalizedPeerName, StringComparison.OrdinalIgnoreCase))
                 {
                     rdpDesktopMap[normalizedPeerName] = kv.Value;
@@ -1022,23 +1022,23 @@ public partial class MainWindow : Window
         // title shows the friendly name (e.g. "davris-10"), and the DevBox reports its
         // friendly name from the Agent config. Ambiguity-guarded like Pass 3.
         var unmatchedDevBoxPeers = serverPeers
-            .Where(p => !pairedPeers.Contains(MachineInfo.NormalizeHostname(p.MachineName))
+            .Where(p => !pairedPeers.Contains(MachineName.From(p.MachineName).Canonical)
                         && !string.IsNullOrEmpty(p.DevBoxFriendlyName))
             .ToList();
 
         // Group by normalized friendly name — skip if multiple peers claim the same name.
         var byFriendlyName = unmatchedDevBoxPeers
-            .GroupBy(p => MachineInfo.NormalizeHostname(p.DevBoxFriendlyName!), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(p => MachineName.From(p.DevBoxFriendlyName!).Canonical, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() == 1)
             .ToDictionary(g => g.Key, g => g.Single(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var kv in msrdcMap)
         {
             if (pairedWindows.Contains(kv.Key)) continue;
-            var normalizedTitle = MachineInfo.NormalizeHostname(kv.Key);
+            var normalizedTitle = MachineName.From(kv.Key).Canonical;
             if (byFriendlyName.TryGetValue(normalizedTitle, out var peer))
             {
-                var normalizedPeerName = MachineInfo.NormalizeHostname(peer.MachineName);
+                var normalizedPeerName = MachineName.From(peer.MachineName).Canonical;
                 rdpDesktopMap[normalizedPeerName] = kv.Value;
                 pairedWindows.Add(kv.Key);
                 pairedPeers.Add(normalizedPeerName);
@@ -1054,7 +1054,7 @@ public partial class MainWindow : Window
             var ipToPeer = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var peer in serverPeers)
             {
-                var normalizedPeerName = MachineInfo.NormalizeHostname(peer.MachineName);
+                var normalizedPeerName = MachineName.From(peer.MachineName).Canonical;
                 if (pairedPeers.Contains(normalizedPeerName)) continue;
                 if (peerAddresses.TryGetValue(peer.MachineName, out var peerIp))
                     ipToPeer.TryAdd(peerIp, normalizedPeerName);
@@ -1097,7 +1097,7 @@ public partial class MainWindow : Window
                 var ipToPeerP4 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var peer in serverPeers)
                 {
-                    var normalizedPeerName = MachineInfo.NormalizeHostname(peer.MachineName);
+                    var normalizedPeerName = MachineName.From(peer.MachineName).Canonical;
                     if (pairedPeers.Contains(normalizedPeerName)) continue;
                     if (peerAddresses.TryGetValue(peer.MachineName, out var peerIp))
                         ipToPeerP4.TryAdd(peerIp, normalizedPeerName);

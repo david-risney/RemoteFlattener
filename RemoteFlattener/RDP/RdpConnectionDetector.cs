@@ -104,14 +104,14 @@ public static class RdpConnectionDetector
             string hostname;
             try
             {
-                hostname = MachineInfo.NormalizeHostname(resolveHostname(addr));
+                hostname = MachineName.From(resolveHostname(addr)).Canonical;
             }
             catch
             {
                 hostname = addr.ToString();
             }
 
-            if (!hostname.Equals(localHostname, StringComparison.OrdinalIgnoreCase))
+            if (!MachineName.From(hostname).CanonicalEqualsObservedValue(localHostname))
                 results.Add(new RdpPeer(hostname, addr.ToString()));
         }
         return results;
@@ -136,16 +136,16 @@ public static class RdpConnectionDetector
             string hostname;
             try
             {
-                // NormalizeHostname strips the FQDN to just the short machine name
+                // MachineName canonicalization strips the FQDN to the short machine name.
                 // so it matches what Environment.MachineName returns on the peer.
-                hostname = MachineInfo.NormalizeHostname(resolveHostname(addr));
+                hostname = MachineName.From(resolveHostname(addr)).Canonical;
             }
             catch
             {
                 hostname = addr.ToString();
             }
 
-            if (!hostname.Equals(localHostname, StringComparison.OrdinalIgnoreCase))
+            if (!MachineName.From(hostname).CanonicalEqualsObservedValue(localHostname))
                 results.Add(hostname);
         }
         return results;
@@ -168,7 +168,7 @@ public static class RdpConnectionDetector
             clientName = Environment.GetEnvironmentVariable("CLIENTNAME");
         }
         if (string.IsNullOrWhiteSpace(clientName)) return null;
-        return MachineInfo.NormalizeHostname(clientName);
+        return MachineName.From(clientName).Canonical;
     }
 
     private const int WTS_CURRENT_SESSION = -1;
@@ -224,7 +224,7 @@ public static class RdpConnectionDetector
     {
         var clientName = GetRdpClientName();
         if (clientName == null) return Array.Empty<RdpPeer>();
-        if (clientName.Equals(localHostname, StringComparison.OrdinalIgnoreCase))
+        if (MachineName.From(clientName).CanonicalEqualsObservedValue(localHostname))
             return Array.Empty<RdpPeer>();
 
         try

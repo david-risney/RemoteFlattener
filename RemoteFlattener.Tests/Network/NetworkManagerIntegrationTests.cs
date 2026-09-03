@@ -162,6 +162,60 @@ public class NetworkManagerIntegrationTests : IDisposable
         Assert.Equal("NODE-B", received.First().TargetMachine);
     }
 
+    [Fact]
+    public async Task TwoNodes_SendToPeerWithFqdn_IsReceived()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var received = new ConcurrentBag<NetworkMessage>();
+        nodeB.MessageReceived += (_, msg) => received.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        await nodeA.SendToPeerAsync("node-b.example.test", new NetworkMessage
+        {
+            Type = MessageTypes.SwitchToDesktop,
+            CurrentDesktop = 4,
+        });
+
+        await WaitForAsync(() => received.Count > 0, TimeSpan.FromSeconds(5), "message received");
+        Assert.Equal(MessageTypes.SwitchToDesktop, received.First().Type);
+        Assert.Equal(4, received.First().CurrentDesktop);
+        Assert.Equal("NODE-B", received.First().TargetMachine);
+    }
+
+    [Fact]
+    public async Task TwoNodes_LegacyFqdnTarget_IsReceived()
+    {
+        int portA = GetFreePort(), portB = GetFreePort();
+        var nodeA = CreateNode("NODE-A", portA);
+        var nodeB = CreateNode("NODE-B", portB);
+
+        var received = new ConcurrentBag<NetworkMessage>();
+        nodeB.MessageReceived += (_, msg) => received.Add(msg);
+
+        nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
+        nodeB.Start("pw", Array.Empty<(string, string, int)>());
+
+        await WaitForAsync(() => nodeA.ConnectedPeers.Any(), TimeSpan.FromSeconds(5), "connected");
+
+        await nodeA.BroadcastAsync(new NetworkMessage
+        {
+            Type = MessageTypes.SwitchToDesktop,
+            CurrentDesktop = 4,
+            TargetMachine = "node-b.example.test",
+        });
+
+        await WaitForAsync(() => received.Count > 0, TimeSpan.FromSeconds(5), "message received");
+        Assert.Equal(MessageTypes.SwitchToDesktop, received.First().Type);
+        Assert.Equal(4, received.First().CurrentDesktop);
+    }
+
     // ── Three-node relay ───────────────────────────────────────────────────
 
     [Fact]

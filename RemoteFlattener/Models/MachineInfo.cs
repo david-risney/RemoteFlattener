@@ -137,15 +137,4 @@ public class MachineInfo : INotifyPropertyChanged
     protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
         => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 
-    /// <summary>
-    /// Reduces a hostname to its first DNS label, uppercased.
-    /// "davris-0.guest.corp.microsoft.com" and "DAVRIS-0" both become "DAVRIS-0".
-    /// This is used as the canonical key for all machine-name lookups and storage.
-    /// </summary>
-    public static string NormalizeHostname(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return name;
-        var dot = name.IndexOf('.');
-        return (dot > 0 ? name[..dot] : name).ToUpperInvariant();
-    }
 }

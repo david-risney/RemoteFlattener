@@ -17,10 +17,10 @@ internal static class PeerStateHelper
     /// </summary>
     public static void ClearDisconnectedPeerState(MachineInfo peer)
     {
-        peer.IsConnected      = false;
-        peer.RdpPeers         = new();
+        peer.IsConnected = false;
+        peer.RdpPeers = new();
         peer.RdpHostedServers = new();
-        peer.RdpClientName    = null;
+        peer.RdpClientName = null;
     }
 
     /// <summary>
@@ -38,16 +38,16 @@ internal static class PeerStateHelper
         foreach (var peer in peers.Where(p => p.IsConnected))
             foreach (var rp in peer.RdpPeers)
                 if (!string.IsNullOrWhiteSpace(rp))
-                    indirectNames.Add(MachineInfo.NormalizeHostname(rp));
+                    indirectNames.Add(MachineName.From(rp).Canonical);
 
         // We are never "indirect" to ourselves.
-        indirectNames.Remove(MachineInfo.NormalizeHostname(localMachineName));
+        indirectNames.Remove(MachineName.From(localMachineName).Canonical);
 
         foreach (var peer in peers)
         {
             // Never mark a directly-connected peer as indirect.
             peer.IsIndirect = !peer.IsConnected && indirectNames.Contains(
-                MachineInfo.NormalizeHostname(peer.MachineName));
+                MachineName.From(peer.MachineName).Canonical);
         }
     }
 }

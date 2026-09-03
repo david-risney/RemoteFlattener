@@ -6,31 +6,6 @@ namespace RemoteFlattener.Tests.Models;
 
 public class MachineInfoTests
 {
-    // ── NormalizeHostname ──────────────────────────────────────────────────
-
-    [Theory]
-    [InlineData("davris-0.guest.corp.microsoft.com", "DAVRIS-0")]
-    [InlineData("machine.domain.com",               "MACHINE")]
-    [InlineData("DAVRIS-0",                          "DAVRIS-0")]
-    [InlineData("davris-0",                          "DAVRIS-0")]
-    [InlineData("a.b.c.d.e",                         "A")]
-    public void NormalizeHostname_StripsToFirstLabel_Uppercased(string input, string expected)
-    {
-        Assert.Equal(expected, MachineInfo.NormalizeHostname(input));
-    }
-
-    [Fact]
-    public void NormalizeHostname_EmptyString_ReturnsEmpty()
-    {
-        Assert.Equal(string.Empty, MachineInfo.NormalizeHostname(string.Empty));
-    }
-
-    [Fact]
-    public void NormalizeHostname_NoSeparator_UppercasesEntireName()
-    {
-        Assert.Equal("MYPC", MachineInfo.NormalizeHostname("mypc"));
-    }
-
     // ── MachineName setter preserves value ─────────────────────────────────
 
     [Fact]
