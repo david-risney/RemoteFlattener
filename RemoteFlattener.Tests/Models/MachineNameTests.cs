@@ -17,12 +17,11 @@ public class MachineNameTests
     }
 
     [Fact]
-    public void ValueAndDisplayName_PreserveObservedFqdn()
+    public void Value_PreservesObservedFqdn()
     {
         var name = MachineName.From("davris-0.guest.corp.microsoft.com");
 
         Assert.Equal("davris-0.guest.corp.microsoft.com", name.Value);
-        Assert.Equal(name.Value, name.DisplayName);
     }
 
     [Fact]

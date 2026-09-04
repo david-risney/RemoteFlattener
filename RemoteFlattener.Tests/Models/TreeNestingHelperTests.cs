@@ -22,7 +22,7 @@ public class TreeNestingHelperTests
         {
             MachineName = "CLIENT",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int>
+            RdpHostedServers = new MachineDesktopMap
             {
                 { "SERVER-A", 2 },
                 { "SERVER-B", 3 }
@@ -50,7 +50,7 @@ public class TreeNestingHelperTests
         {
             MachineName = "CLIENT",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int>()
+            RdpHostedServers = new MachineDesktopMap()
         };
 
         var server = new MachineInfo { MachineName = "SERVER", IsRdpServer = true, IsConnected = true };
@@ -69,7 +69,7 @@ public class TreeNestingHelperTests
         {
             MachineName = "CLIENT",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int> { { "CLIENT", 1 } }
+            RdpHostedServers = new MachineDesktopMap { { "CLIENT", 1 } }
         };
 
         var all = new List<MachineInfo> { client };
@@ -87,7 +87,7 @@ public class TreeNestingHelperTests
         {
             MachineName = "CLIENT",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int> { { "SERVER-A", 2 } }
+            RdpHostedServers = new MachineDesktopMap { { "SERVER-A", 2 } }
         };
 
         var serverA = new MachineInfo { MachineName = "SERVER-A", IsRdpServer = true, IsConnected = true };
@@ -106,7 +106,7 @@ public class TreeNestingHelperTests
         {
             MachineName = "CLIENT",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase)
+            RdpHostedServers = new MachineDesktopMap
             {
                 { "DAVRIS-0", 2 }
             }
@@ -132,7 +132,7 @@ public class TreeNestingHelperTests
         {
             MachineName = "CLIENT",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int> { { "PEER", 3 } }
+            RdpHostedServers = new MachineDesktopMap { { "PEER", 3 } }
         };
 
         var peer = new MachineInfo { MachineName = "PEER", IsRdpServer = false, IsConnected = true };
@@ -152,7 +152,7 @@ public class TreeNestingHelperTests
         {
             MachineName = "CLIENT",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int>
+            RdpHostedServers = new MachineDesktopMap
             {
                 { "SERVER-A", 2 },
                 { "SERVER-B", 2 }
@@ -178,7 +178,7 @@ public class TreeNestingHelperTests
         {
             MachineName = "CLIENT",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase)
+            RdpHostedServers = new MachineDesktopMap
             {
                 { "DAVRIS-0", 2 }
             }
@@ -204,7 +204,7 @@ public class TreeNestingHelperTests
         var client = new MachineInfo
         {
             MachineName = "CLIENT",
-            RdpHostedServers = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase)
+            RdpHostedServers = new MachineDesktopMap
             {
                 { "SERVER", 4 }
             }
@@ -219,7 +219,7 @@ public class TreeNestingHelperTests
         var client = new MachineInfo
         {
             MachineName = "CLIENT",
-            RdpHostedServers = new Dictionary<string, int>()
+            RdpHostedServers = new MachineDesktopMap()
         };
 
         Assert.Equal(-1, TreeNestingHelper.GetLocalServerDesktopIndex(client, "SERVER"));
@@ -282,7 +282,7 @@ public class TreeNestingHelperTests
             MachineName = "CLIENT",
             IsRdpServer = false,
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase)
+            RdpHostedServers = new MachineDesktopMap
             {
                 { "SERVER", 3 }
             }

@@ -58,11 +58,11 @@ public partial class TreeWindow : Window
 
     // ── Fields ───────────────────────────────────────────────────────────────
 
-    private readonly Action<string>                    _onTaskViewRequested;
-    private readonly Action<string, int>               _onSwitchToDesktop;
+    private readonly Action<MachineName>               _onTaskViewRequested;
+    private readonly Action<MachineName, int>          _onSwitchToDesktop;
     private readonly Action                            _onSettingsRequested;
     private readonly ObservableCollection<MachineInfo> _peers;
-    private readonly string _localMachineName;
+    private readonly MachineName _localMachineName;
     private readonly bool   _localIsRdpServer;
 
     // Flat ordered list of every navigable row (machine header or desktop row) + its action.
@@ -80,9 +80,9 @@ public partial class TreeWindow : Window
     // Last-computed server → desktop index mapping on the tree root (the client that
     // hosts mstsc/msrdc windows). When local is a client this is a local window scan;
     // when local is a server, it mirrors the hosting client's RdpHostedServers.
-    private Dictionary<string, int> _rdpDesktopMap = new(StringComparer.OrdinalIgnoreCase);
+    private MachineDesktopMap _rdpDesktopMap = new();
     // The machine name that owns _rdpDesktopMap (the tree root / hosting client).
-    private string _rdpDesktopMapOwner = string.Empty;
+    private MachineName _rdpDesktopMapOwner = MachineName.From(string.Empty);
 
     // Snapshot of desktop count and names from the last build — used for dirty-checking.
     private int _cachedDesktopCount;
@@ -104,28 +104,28 @@ public partial class TreeWindow : Window
         string? WallpaperPath, // local file path
         string? WallpaperData, // base64 JPEG received from remote machine
         string? BackgroundColor, // hex RGB (e.g. "#1E1E2E") when desktop uses solid colour
-        string  MachineName,
+        MachineName Machine,
         bool    IsLocal
     );
 
     // Pre-computed RDP map passed from MainWindow (avoids expensive EnumWindows on first open).
-    private Dictionary<string, int>? _cachedRdpMapFromCaller;
+    private MachineDesktopMap? _cachedRdpMapFromCaller;
 
     public TreeWindow(
         ObservableCollection<MachineInfo> peers,
-        string localMachineName,
+        MachineName localMachine,
         bool localIsRdpServer,
-        Action<string> onTaskViewRequested,
-        Action<string, int> onSwitchToDesktop,
+        Action<MachineName> onTaskViewRequested,
+        Action<MachineName, int> onSwitchToDesktop,
         Action onSettingsRequested,
-        Dictionary<string, int>? cachedRdpMap = null)
+        MachineDesktopMap? cachedRdpMap = null)
     {
         InitializeComponent();
         _onTaskViewRequested = onTaskViewRequested;
         _onSwitchToDesktop   = onSwitchToDesktop;
         _onSettingsRequested = onSettingsRequested;
         _peers               = peers;
-        _localMachineName    = localMachineName;
+        _localMachineName    = localMachine;
         _localIsRdpServer    = localIsRdpServer;
         _cachedRdpMapFromCaller = cachedRdpMap;
 
@@ -255,8 +255,9 @@ public partial class TreeWindow : Window
         if (!_localIsRdpServer)
         {
             var allNames = _peers.Select(p => MachineName.From(p.MachineName).Canonical).ToList();
-            var currentMap = RdpWindowLocator.GetRdpDesktopMap(allNames);
-            MainWindow.MergeMsrdcDesktopEntries(currentMap, _peers, _localMachineName);
+            var currentRawMap = RdpWindowLocator.GetRdpDesktopMap(allNames);
+            MainWindow.MergeMsrdcDesktopEntries(currentRawMap, _peers, _localMachineName.Value);
+            var currentMap = MachineDesktopMap.FromWire(currentRawMap);
             if (!RdpDesktopMapEquals(_rdpDesktopMap, currentMap))
                 dirty = true;
         }
@@ -281,15 +282,8 @@ public partial class TreeWindow : Window
     }
 
     private static bool RdpDesktopMapEquals(
-        Dictionary<string, int> a,
-        Dictionary<string, int> b)
-    {
-        if (a.Count != b.Count) return false;
-        foreach (var kv in a)
-            if (!b.TryGetValue(kv.Key, out var v) || v != kv.Value)
-                return false;
-        return true;
-    }
+        MachineDesktopMap a,
+        MachineDesktopMap b) => a.ContentEquals(b);
 
     private static string BuildDesktopSignature(VirtualDesktopProvider.DesktopInfo[] desktops)
     {
@@ -390,7 +384,7 @@ public partial class TreeWindow : Window
     {
         var localMachineInfo = new MachineInfo
         {
-            MachineName    = _localMachineName,
+            MachineName    = _localMachineName.Value,
             IsRdpServer    = _localIsRdpServer,
             IsConnected    = true,
             CurrentDesktop = 0,
@@ -408,8 +402,8 @@ public partial class TreeWindow : Window
         // This maps serverName → local desktop index via live window scan.
         // We also store it back onto localMachineInfo so BuildTree can use the same
         // code path for both local and remote client peers.
-        Dictionary<string, int> localRdpMap;
-        string rdpMapOwner;
+        MachineDesktopMap localRdpMap;
+        MachineName rdpMapOwner;
         if (!_localIsRdpServer)
         {
             // Use pre-computed map from caller if available (avoids expensive EnumWindows).
@@ -421,19 +415,16 @@ public partial class TreeWindow : Window
             }
             else
             {
-                localRdpMap = RdpWindowLocator.GetRdpDesktopMap(
+                var rawMap = RdpWindowLocator.GetRdpDesktopMap(
                     allMachineNames.Select(name => MachineName.From(name).Canonical).ToList());
                 // Merge msrdc (Cloud DevBox / AVD) windows by pairing them with peers
                 // via MachineName match, RdpClientName match, or DNS/IP resolution.
-                MainWindow.MergeMsrdcDesktopEntries(localRdpMap, _peers, _localMachineName);
+                MainWindow.MergeMsrdcDesktopEntries(rawMap, _peers, _localMachineName.Value);
+                localRdpMap = MachineDesktopMap.FromWire(rawMap);
                 perf?.Checkpoint("RdpDesktopMap + MergeMsrdc");
             }
 
-            localMachineInfo.RdpHostedServers = new Dictionary<string, int>(
-                localRdpMap.ToDictionary(
-                    kv => MachineName.From(kv.Key).Canonical,
-                    kv => kv.Value),
-                StringComparer.OrdinalIgnoreCase);
+            localMachineInfo.RdpHostedServers = new MachineDesktopMap(localRdpMap);
             rdpMapOwner = _localMachineName;
         }
         else
@@ -443,15 +434,15 @@ public partial class TreeWindow : Window
             // the hosting client to the correct desktop.
             var hostClient = _peers.FirstOrDefault(p =>
                 !p.IsRdpServer &&
-                p.RdpHostedServers.ContainsKey(MachineName.From(_localMachineName).Canonical));
+                p.RdpHostedServers.ContainsKey(_localMachineName));
             if (hostClient != null && hostClient.RdpHostedServers.Count > 0)
             {
-                localRdpMap = new Dictionary<string, int>(hostClient.RdpHostedServers, StringComparer.OrdinalIgnoreCase);
-                rdpMapOwner = hostClient.MachineName;
+                localRdpMap = new MachineDesktopMap(hostClient.RdpHostedServers);
+                rdpMapOwner = MachineName.From(hostClient.MachineName);
             }
             else
             {
-                localRdpMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                localRdpMap = new MachineDesktopMap();
                 rdpMapOwner = _localMachineName;
             }
         }
@@ -459,7 +450,7 @@ public partial class TreeWindow : Window
         _rdpDesktopMapOwner = rdpMapOwner;
 
         if (localRdpMap.Count > 0)
-            AppLogger.Log($"BuildTree: hostedMap has {localRdpMap.Count} entries: {string.Join(", ", localRdpMap.Select(kv => $"{kv.Key}→desktop{kv.Value}"))}");
+            AppLogger.Log($"BuildTree: hostedMap has {localRdpMap.Count} entries: {string.Join(", ", localRdpMap.Select(kv => $"{kv.Key.Canonical}→desktop{kv.Value}"))}");
         else
             AppLogger.Log($"BuildTree: hostedMap is EMPTY — no mstsc/msrdc windows found for peers [{string.Join(", ", allMachineNames)}]");
 
@@ -473,11 +464,11 @@ public partial class TreeWindow : Window
 
         // Collect the set of machine names that our hosting client(s) also host,
         // so sibling servers can be included.
-        var siblingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var siblingNames = new HashSet<MachineName>();
         if (_localIsRdpServer)
         {
             foreach (var client in _peers.Where(p => !p.IsRdpServer &&
-                p.RdpHostedServers.ContainsKey(MachineName.From(_localMachineName).Canonical)))
+                p.RdpHostedServers.ContainsKey(_localMachineName)))
             {
                 foreach (var hosted in client.RdpHostedServers.Keys)
                     siblingNames.Add(hosted);
@@ -492,9 +483,9 @@ public partial class TreeWindow : Window
             (!p.IsRdpServer && p.RdpHostedServers.Count > 0) ||
             // When we're a server: any client peer that lists us in RdpPeers
             (_localIsRdpServer && !p.IsRdpServer && p.RdpPeers.Any(rp =>
-                MachineName.From(rp).Equals(MachineName.From(_localMachineName)))) ||
+                MachineName.From(rp).Equals(_localMachineName))) ||
             // Sibling servers: other servers hosted by the same client
-            (p.IsRdpServer && siblingNames.Contains(MachineName.From(p.MachineName).Canonical))
+            (p.IsRdpServer && siblingNames.Contains(MachineName.From(p.MachineName)))
         ));
 
         AppLogger.Log($"BuildTree: {all.Count} machines in tree: [{string.Join(", ", all.Select(m => $"{m.MachineName}(server={m.IsRdpServer},conn={m.IsConnected})"))}]");
@@ -503,12 +494,12 @@ public partial class TreeWindow : Window
 
         var serverNodes = all
             .Where(m => m.IsRdpServer &&
-                        !MachineName.From(m.MachineName).HasSameObservedValue(_localMachineName))
+                        !MachineName.From(m.MachineName).HasSameObservedValue(_localMachineName.Value))
             .ToList();
         var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // ── Local machine root ───────────────────────────────────────────────
-        shown.Add(_localMachineName);
+        shown.Add(_localMachineName.Value);
         var localRoot = MakeMachineItem(localMachineInfo, isLocal: true);
 
         if (_localIsRdpServer)
@@ -524,7 +515,7 @@ public partial class TreeWindow : Window
             hostingClient ??= _peers.FirstOrDefault(p =>
                 !p.IsRdpServer &&
                 p.RdpPeers.Any(rp =>
-                    MachineName.From(rp).CanonicalEqualsObservedValue(_localMachineName)));
+                    MachineName.From(rp).CanonicalEqualsObservedValue(_localMachineName.Value)));
             // Last resort: any connected/known non-server peer is likely our host.
             // This fires when the client's state hasn't been received yet.
             hostingClient ??= _peers.FirstOrDefault(p =>
@@ -642,8 +633,8 @@ public partial class TreeWindow : Window
         header.Children.Add(leftStack);
 
         // Clicking anywhere on the machine row triggers Task View.
-        var machineName = info.MachineName;
-        Action action = () => _onTaskViewRequested(machineName);
+        var machine = MachineName.From(info.MachineName);
+        Action action = () => _onTaskViewRequested(machine);
         header.MouseLeftButtonDown += (_, e) => { action(); e.Handled = true; };
         AddHoverEffect(header);
 
@@ -659,12 +650,13 @@ public partial class TreeWindow : Window
 
     private DesktopRow[] GetDesktopRowsFor(MachineInfo m, bool parentIsActive = true)
     {
-        var isLocal = MachineName.From(m.MachineName).HasSameObservedValue(_localMachineName);
+        var machine = MachineName.From(m.MachineName);
+        var isLocal = machine.HasSameObservedValue(_localMachineName.Value);
         if (isLocal && _localApiDesktops.Length > 0)
         {
             // Local machine: always use real API data regardless of parent context.
             return _localApiDesktops.Select(d =>
-                new DesktopRow(d.Index, d.DisplayName, d.IsCurrent, d.Id, d.WallpaperPath, null, d.BackgroundColor, m.MachineName, true)
+                new DesktopRow(d.Index, d.DisplayName, d.IsCurrent, d.Id, d.WallpaperPath, null, d.BackgroundColor, machine, true)
             ).ToArray();
         }
         if (m.TotalDesktops <= 0) return Array.Empty<DesktopRow>();
@@ -679,7 +671,7 @@ public partial class TreeWindow : Window
             // A remote desktop is only "current" (shows Active, Switch disabled) when the
             // parent context is also active — i.e. the full path from root is currently displayed.
             var isCurrent = parentIsActive && m.CurrentDesktop == i + 1;
-            rows[i] = new DesktopRow(i + 1, name, isCurrent, null, null, thumb, color, m.MachineName, false);
+            rows[i] = new DesktopRow(i + 1, name, isCurrent, null, null, thumb, color, machine, false);
         }
         return rows;
     }
@@ -710,9 +702,9 @@ public partial class TreeWindow : Window
         // The hostedMap itself (built from the live window scan) is the authoritative source.
         var hostedMap = client.RdpHostedServers;
         var serversByDesktop = all
-            .Where(m => !MachineName.From(m.MachineName).HasSameObservedValue(_localMachineName) &&
-                        hostedMap.ContainsKey(MachineName.From(m.MachineName).Canonical))
-            .GroupBy(m => hostedMap[MachineName.From(m.MachineName).Canonical])
+            .Where(m => !MachineName.From(m.MachineName).HasSameObservedValue(_localMachineName.Value) &&
+                        hostedMap.ContainsKey(MachineName.From(m.MachineName)))
+            .GroupBy(m => hostedMap[MachineName.From(m.MachineName)])
             .ToDictionary(g => g.Key, g => g.ToList());
 
         // If we're the server, find which desktop index we belong to.
@@ -843,13 +835,13 @@ public partial class TreeWindow : Window
         }
 
         var desktopIndex = d.Index;
-        var machineName  = d.MachineName;
+        var machine = d.Machine;
         var isLocal      = d.IsLocal;
         var isCurrent    = d.IsCurrent;
 
         Action action = () =>
         {
-            AppLogger.Log($"DesktopMap action: machine={machineName}, desktopIndex={desktopIndex}, isLocal={isLocal}, isCurrent={isCurrent}");
+            AppLogger.Log($"DesktopMap action: machine={machine.Value}, desktopIndex={desktopIndex}, isLocal={isLocal}, isCurrent={isCurrent}");
             if (isCurrent)
             {
                 _closing = true;
@@ -857,23 +849,22 @@ public partial class TreeWindow : Window
                 return;
             }
             // Switch the tree-root client to the desktop hosting this server's window.
-            var normalizedName = MachineName.From(machineName).Canonical;
-            if (!isLocal && _rdpDesktopMap.TryGetValue(normalizedName, out var localIdx))
+            if (!isLocal && _rdpDesktopMap.TryGetValue(machine, out var localIdx))
             {
-                AppLogger.Log($"DesktopMap action: switching root ({_rdpDesktopMapOwner}) to desktop {localIdx} (hosts {normalizedName})");
+                AppLogger.Log($"DesktopMap action: switching root ({_rdpDesktopMapOwner.Value}) to desktop {localIdx} (hosts {machine.Canonical})");
                 _onSwitchToDesktop(_rdpDesktopMapOwner, localIdx);
             }
             // When selecting the server's own (local) desktop, also switch the hosting
             // client to the desktop that has the mstsc window so the user can see
             // the result through the RDP session.
             if (isLocal && _localIsRdpServer && _rdpDesktopMap.TryGetValue(
-                    MachineName.From(_localMachineName).Canonical, out var clientIdx))
+                    _localMachineName, out var clientIdx))
             {
-                AppLogger.Log($"DesktopMap action: switching hosting client ({_rdpDesktopMapOwner}) to desktop {clientIdx} (hosts local server)");
+                AppLogger.Log($"DesktopMap action: switching hosting client ({_rdpDesktopMapOwner.Value}) to desktop {clientIdx} (hosts local server)");
                 _onSwitchToDesktop(_rdpDesktopMapOwner, clientIdx);
             }
-            AppLogger.Log($"DesktopMap action: switching {machineName} to desktop {desktopIndex}");
-            _onSwitchToDesktop(machineName, desktopIndex);
+            AppLogger.Log($"DesktopMap action: switching {machine.Value} to desktop {desktopIndex}");
+            _onSwitchToDesktop(machine, desktopIndex);
             // Always dismiss the overlay after a selection.
             _closing = true;
             Close();

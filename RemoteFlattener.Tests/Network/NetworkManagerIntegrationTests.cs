@@ -113,7 +113,7 @@ public class NetworkManagerIntegrationTests : IDisposable
         var nodeB = CreateNode("NODE-B", portB);
 
         var received = new ConcurrentBag<(string sender, NetworkMessage msg)>();
-        nodeB.MessageReceived += (sender, msg) => received.Add((sender, msg));
+        nodeB.MessageReceived += (sender, msg) => received.Add((sender.Canonical, msg));
 
         nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
         nodeB.Start("pw", Array.Empty<(string, string, int)>());
@@ -321,8 +321,8 @@ public class NetworkManagerIntegrationTests : IDisposable
 
         var connected = new ConcurrentBag<string>();
         var disconnected = new ConcurrentBag<string>();
-        nodeA.PeerConnected += name => connected.Add(name);
-        nodeA.PeerDisconnected += name => disconnected.Add(name);
+        nodeA.PeerConnected += name => connected.Add(name.Canonical);
+        nodeA.PeerDisconnected += name => disconnected.Add(name.Canonical);
 
         nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
         nodeB.Start("pw", Array.Empty<(string, string, int)>());
@@ -1256,7 +1256,7 @@ public class NetworkManagerIntegrationTests : IDisposable
         var nodeB = CreateNode("NODE-B", portB);
 
         var disconnectedNames = new ConcurrentBag<string>();
-        nodeA.PeerDisconnected += name => disconnectedNames.Add(name);
+        nodeA.PeerDisconnected += name => disconnectedNames.Add(name.Canonical);
 
         nodeA.Start("pw", new[] { ("NODE-B", "127.0.0.1", portB) });
         nodeB.Start("pw", Array.Empty<(string, string, int)>());

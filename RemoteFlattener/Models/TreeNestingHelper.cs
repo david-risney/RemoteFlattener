@@ -26,16 +26,27 @@ public static class TreeNestingHelper
         IReadOnlyList<MachineInfo> allMachines,
         string localMachineName,
         ISet<string> alreadyShown)
+        => ComputeServersByDesktop(
+            client,
+            allMachines,
+            MachineName.From(localMachineName),
+            alreadyShown);
+
+    private static Dictionary<int, List<MachineInfo>> ComputeServersByDesktop(
+        MachineInfo client,
+        IReadOnlyList<MachineInfo> allMachines,
+        MachineName localMachine,
+        ISet<string> alreadyShown)
     {
         var hostedMap = client.RdpHostedServers;
         if (hostedMap == null || hostedMap.Count == 0)
             return new Dictionary<int, List<MachineInfo>>();
 
         return allMachines
-            .Where(m => !MachineName.From(m.MachineName).HasSameObservedValue(localMachineName) &&
+            .Where(m => !MachineName.From(m.MachineName).HasSameObservedValue(localMachine.Value) &&
                         !alreadyShown.Contains(m.MachineName) &&
-                        hostedMap.ContainsKey(MachineName.From(m.MachineName).Canonical))
-            .GroupBy(m => hostedMap[MachineName.From(m.MachineName).Canonical])
+                        hostedMap.ContainsKey(MachineName.From(m.MachineName)))
+            .GroupBy(m => hostedMap[MachineName.From(m.MachineName)])
             .ToDictionary(g => g.Key, g => g.ToList());
     }
 
@@ -47,12 +58,15 @@ public static class TreeNestingHelper
     public static int GetLocalServerDesktopIndex(
         MachineInfo client,
         string localMachineName)
+        => GetLocalServerDesktopIndex(client, MachineName.From(localMachineName));
+
+    private static int GetLocalServerDesktopIndex(
+        MachineInfo client,
+        MachineName localMachine)
     {
         var hostedMap = client.RdpHostedServers;
         if (hostedMap == null) return -1;
-
-        var normalizedLocal = MachineName.From(localMachineName).Canonical;
-        return hostedMap.TryGetValue(normalizedLocal, out var idx) ? idx : -1;
+        return hostedMap.TryGetValue(localMachine, out var idx) ? idx : -1;
     }
 
     /// <summary>
@@ -69,10 +83,21 @@ public static class TreeNestingHelper
         bool localIsRdpServer,
         IReadOnlyList<MachineInfo> peers,
         Dictionary<string, int> localRdpHostedServers)
+        => ComputeLayout(
+            MachineName.From(localMachineName),
+            localIsRdpServer,
+            peers,
+            MachineDesktopMap.FromWire(localRdpHostedServers));
+
+    private static TreeLayout ComputeLayout(
+        MachineName localMachine,
+        bool localIsRdpServer,
+        IReadOnlyList<MachineInfo> peers,
+        MachineDesktopMap localRdpHostedServers)
     {
         var localMachineInfo = new MachineInfo
         {
-            MachineName = localMachineName,
+            MachineName = localMachine.Value,
             IsRdpServer = localIsRdpServer,
             IsConnected = true,
             RdpHostedServers = localRdpHostedServers
@@ -82,10 +107,10 @@ public static class TreeNestingHelper
         var all = new List<MachineInfo> { localMachineInfo };
         all.AddRange(peers.Where(p => p.IsConnected || p.IsIndirect ||
             (p.IsRdpServer && localRdpHostedServers.ContainsKey(
-                MachineName.From(p.MachineName).Canonical))));
+                MachineName.From(p.MachineName)))));
 
         var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        shown.Add(localMachineName);
+        shown.Add(localMachine.Value);
 
         var layout = new TreeLayout();
 
@@ -94,25 +119,25 @@ public static class TreeNestingHelper
             // Server path: find the hosting client.
             var hostingClient = peers.FirstOrDefault(p =>
                 !p.IsRdpServer &&
-                p.RdpHostedServers.ContainsKey(MachineName.From(localMachineName).Canonical));
+                p.RdpHostedServers.ContainsKey(localMachine));
             hostingClient ??= peers.FirstOrDefault(p =>
                 !p.IsRdpServer &&
                 p.RdpPeers.Any(rp =>
-                    MachineName.From(rp).Equals(MachineName.From(localMachineName))));
+                    MachineName.From(rp).Equals(localMachine)));
             hostingClient ??= peers.FirstOrDefault(p =>
                 !p.IsRdpServer && (p.IsConnected || p.IsIndirect));
 
             if (hostingClient != null)
             {
                 shown.Add(hostingClient.MachineName);
-                var nestedServers = ComputeServersByDesktop(hostingClient, all, localMachineName, shown);
+                var nestedServers = ComputeServersByDesktop(hostingClient, all, localMachine, shown);
                 foreach (var kv in nestedServers)
                     foreach (var s in kv.Value)
                         shown.Add(s.MachineName);
 
                 layout.TopLevelNodes.Add(new TreeNode(hostingClient, isLocal: false,
                     nestedServers: nestedServers,
-                    localServerDesktopIndex: GetLocalServerDesktopIndex(hostingClient, localMachineName)));
+                    localServerDesktopIndex: GetLocalServerDesktopIndex(hostingClient, localMachine)));
             }
             else
             {
@@ -122,7 +147,7 @@ public static class TreeNestingHelper
         else
         {
             // Client path: local machine at root with nested servers.
-            var nestedServers = ComputeServersByDesktop(localMachineInfo, all, localMachineName, shown);
+            var nestedServers = ComputeServersByDesktop(localMachineInfo, all, localMachine, shown);
             foreach (var kv in nestedServers)
                 foreach (var s in kv.Value)
                     shown.Add(s.MachineName);
@@ -136,7 +161,7 @@ public static class TreeNestingHelper
         foreach (var client in clientPeers)
         {
             shown.Add(client.MachineName);
-            var nestedServers = ComputeServersByDesktop(client, all, localMachineName, shown);
+            var nestedServers = ComputeServersByDesktop(client, all, localMachine, shown);
             foreach (var kv in nestedServers)
                 foreach (var s in kv.Value)
                     shown.Add(s.MachineName);

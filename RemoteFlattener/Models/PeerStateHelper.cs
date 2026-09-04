@@ -30,24 +30,28 @@ internal static class PeerStateHelper
     /// now-disconnected node become non-indirect (and thus invisible in the tree).
     /// </summary>
     public static void RecalculateIndirectPeers(
-        IEnumerable<MachineInfo> allPeers, string localMachineName)
+        IEnumerable<MachineInfo> allPeers, string localMachineName) =>
+        RecalculateIndirectPeers(allPeers, MachineName.From(localMachineName));
+
+    public static void RecalculateIndirectPeers(
+        IEnumerable<MachineInfo> allPeers, MachineName localMachine)
     {
         var peers = allPeers as IList<MachineInfo> ?? allPeers.ToList();
 
-        var indirectNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var indirectNames = new HashSet<MachineName>();
         foreach (var peer in peers.Where(p => p.IsConnected))
             foreach (var rp in peer.RdpPeers)
                 if (!string.IsNullOrWhiteSpace(rp))
-                    indirectNames.Add(MachineName.From(rp).Canonical);
+                    indirectNames.Add(MachineName.From(rp));
 
         // We are never "indirect" to ourselves.
-        indirectNames.Remove(MachineName.From(localMachineName).Canonical);
+        indirectNames.Remove(localMachine);
 
         foreach (var peer in peers)
         {
             // Never mark a directly-connected peer as indirect.
             peer.IsIndirect = !peer.IsConnected && indirectNames.Contains(
-                MachineName.From(peer.MachineName).Canonical);
+                MachineName.From(peer.MachineName));
         }
     }
 }

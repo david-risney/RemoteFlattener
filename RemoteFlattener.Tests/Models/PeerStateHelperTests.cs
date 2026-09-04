@@ -42,7 +42,7 @@ public class PeerStateHelperTests
         {
             MachineName = "LAPTOP",
             IsConnected = true,
-            RdpHostedServers = new Dictionary<string, int> { { "SERVER-1", 0 } }
+            RdpHostedServers = new MachineDesktopMap { { "SERVER-1", 0 } }
         };
         PeerStateHelper.ClearDisconnectedPeerState(peer);
         Assert.Empty(peer.RdpHostedServers);
@@ -178,7 +178,7 @@ public class PeerStateHelperTests
             IsConnected = false,  // went offline
             IsIndirect = true,    // was previously known via mesh
             RdpPeers = new List<string>(),  // cleared by ClearDisconnectedPeerState
-            RdpHostedServers = new Dictionary<string, int>(),
+            RdpHostedServers = new MachineDesktopMap(),
             RdpClientName = null
         };
 
@@ -205,7 +205,7 @@ public class PeerStateHelperTests
             IsConnected = true,
             IsIndirect = false,
             RdpPeers = new List<string> { "DAVRIS-4", "SERVER-X" },
-            RdpHostedServers = new Dictionary<string, int>
+            RdpHostedServers = new MachineDesktopMap
             {
                 { "DAVRIS-4", 0 }, { "SERVER-X", 1 }
             },

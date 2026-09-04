@@ -32,7 +32,7 @@ public partial class MainWindow : Window
 
     // Cached RDP desktop map from the last state broadcast (avoids re-enumerating
     // windows when Win+Tab opens the overlay).
-    private Dictionary<string, int>? _cachedRdpMap;
+    private MachineDesktopMap? _cachedRdpMap;
 
     private bool _isRunning;
     private bool _isRdpServer;
@@ -61,6 +61,7 @@ public partial class MainWindow : Window
     /// The local machine name from the network manager (if running) or the environment.
     /// </summary>
     private string LocalName => _networkManager?.LocalMachineName ?? Environment.MachineName;
+    private MachineName LocalMachine => MachineName.From(LocalName);
 
     public MainWindow()
     {
@@ -300,7 +301,9 @@ public partial class MainWindow : Window
                 added++;
                 // Start a connector immediately using the known-good IP address so that
                 // cross-domain short-name DNS failures don't prevent the connection.
-                _networkManager?.ConnectToPeer(peer.MachineName, peer.ConnectionAddress);
+                _networkManager?.ConnectToPeer(
+                    MachineName.From(peer.MachineName),
+                    new MachineEndpoint(peer.ConnectionAddress, _networkManager.Port));
             }
         }
 
@@ -617,17 +620,18 @@ public partial class MainWindow : Window
 
     // ── Network callbacks (arrive on background threads) ─────────────────────
 
-    private void OnMessageReceived(string machineName, NetworkMessage msg)
+    private void OnMessageReceived(MachineName machine, NetworkMessage msg)
     {
         Dispatcher.Invoke(() =>
         {
+            var machineName = machine.Canonical;
             switch (msg.Type)
             {
                 case MessageTypes.StateUpdate:
                     // Use msg.MachineName (the originator) not machineName (the TCP relay hop).
                     // If a STATE_UPDATE from C is relayed through B, machineName would be "B",
                     // which would overwrite B's entry with C's desktop/wallpaper data.
-                    UpsertMachineInfo(msg.MachineName ?? machineName, msg);
+                    UpsertMachineInfo(MachineName.From(msg.MachineName ?? machineName), msg);
                     break;
 
                 // Only non-server machines act on desktop-switch commands.
@@ -654,11 +658,11 @@ public partial class MainWindow : Window
         });
     }
 
-    private void OnPeerConnected(string machineName)
+    private void OnPeerConnected(MachineName machine)
     {
         Dispatcher.Invoke(() =>
         {
-            var info = GetOrAdd(machineName);
+            var info = GetOrAdd(MachineName.From(machine.Canonical));
             info.IsConnected = true;
             info.IsIndirect  = false;  // now directly connected
             // Share our current state with the newly connected peer.
@@ -667,15 +671,15 @@ public partial class MainWindow : Window
         });
     }
 
-    private void OnPeerDisconnected(string machineName)
+    private void OnPeerDisconnected(MachineName machine)
     {
         Dispatcher.Invoke(() =>
         {
-            var info = FindPeer(machineName);
+            var info = FindPeer(machine);
             if (info != null)
                 PeerStateHelper.ClearDisconnectedPeerState(info);
 
-            PeerStateHelper.RecalculateIndirectPeers(Connections, LocalName);
+            PeerStateHelper.RecalculateIndirectPeers(Connections, LocalMachine);
             RefreshStatusLabel();
         });
     }
@@ -709,7 +713,7 @@ public partial class MainWindow : Window
                 AppLogger.Log("Win+Tab: opening overlay.");
                 _treeWindow = new TreeWindow(
                     Connections,
-                    LocalName,
+                    LocalMachine,
                     _isRdpServer,
                     RequestTaskView,
                     RequestSwitchToDesktop,
@@ -740,34 +744,34 @@ public partial class MainWindow : Window
         _networkManager?.BroadcastAsync(new NetworkMessage { Type = MessageTypes.SwitchRight });
     }
 
-    private void RequestTaskView(string machineName)
+    private void RequestTaskView(MachineName machine)
     {
         _treeWindow?.Close();
         _treeWindow = null;
 
-        if (MachineName.From(machineName).HasSameObservedValue(LocalName))
+        if (machine.HasSameObservedValue(LocalName))
         {
             AppLogger.Log("Task View requested for local machine.");
             InvokeTaskView();
         }
         else
         {
-            AppLogger.Log($"Task View requested for {machineName} — sending {MessageTypes.TaskView} message.");
-            _ = _networkManager?.SendToPeerAsync(machineName, new NetworkMessage { Type = MessageTypes.TaskView });
+            AppLogger.Log($"Task View requested for {machine.Value} — sending {MessageTypes.TaskView} message.");
+            _ = _networkManager?.SendToPeerAsync(machine, new NetworkMessage { Type = MessageTypes.TaskView });
         }
     }
 
-    private void RequestSwitchToDesktop(string machineName, int desktopIndex)
+    private void RequestSwitchToDesktop(MachineName machine, int desktopIndex)
     {
-        if (MachineName.From(machineName).HasSameObservedValue(LocalName))
+        if (machine.HasSameObservedValue(LocalName))
         {
             AppLogger.Log($"Switch to desktop {desktopIndex} on local machine.");
             VirtualDesktopSwitcher.SwitchToIndex(desktopIndex, new WindowInteropHelper(this).Handle);
         }
         else
         {
-            AppLogger.Log($"Requesting desktop {desktopIndex} switch on {machineName}.");
-            _ = _networkManager?.SendToPeerAsync(machineName, new NetworkMessage
+            AppLogger.Log($"Requesting desktop {desktopIndex} switch on {machine.Value}.");
+            _ = _networkManager?.SendToPeerAsync(machine, new NetworkMessage
             {
                 Type           = MessageTypes.SwitchToDesktop,
                 CurrentDesktop = desktopIndex
@@ -809,9 +813,9 @@ public partial class MainWindow : Window
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private void UpsertMachineInfo(string machineName, NetworkMessage msg)
+    private void UpsertMachineInfo(MachineName machine, NetworkMessage msg)
     {
-        var info = GetOrAdd(machineName);
+        var info = GetOrAdd(machine);
         info.CurrentDesktop      = msg.CurrentDesktop;
         info.TotalDesktops       = msg.TotalDesktops;
         info.IsRdpServer         = msg.IsRdpServer;
@@ -819,7 +823,7 @@ public partial class MainWindow : Window
         info.RdpPeers            = msg.RdpPeers            ?? new();
         info.RdpClientName       = msg.RdpClientName;
         info.DevBoxFriendlyName  = msg.DevBoxFriendlyName;
-        info.RdpHostedServers    = NormalizeRdpHostedServers(msg.RdpHostedServers);
+        info.RdpHostedServers    = MachineDesktopMap.FromWire(msg.RdpHostedServers);
         info.DesktopNames        = msg.DesktopNames        ?? new();
         info.WallpaperThumbnails = msg.WallpaperThumbnails ?? new();
         info.WallpaperColors     = msg.WallpaperColors     ?? new();
@@ -841,37 +845,25 @@ public partial class MainWindow : Window
     /// <summary>
     /// Finds an existing peer by normalized hostname, or null if not present.
     /// </summary>
-    private MachineInfo? FindPeer(string machineName)
+    private MachineInfo? FindPeer(string machineName) => FindPeer(MachineName.From(machineName));
+
+    private MachineInfo? FindPeer(MachineName machine)
     {
-        var normalized = MachineName.From(machineName).Canonical;
         return Connections.FirstOrDefault(m =>
-            MachineName.From(m.MachineName).Matches(normalized));
+            MachineName.From(m.MachineName).Equals(machine));
     }
 
-    private MachineInfo GetOrAdd(string machineName)
+    private MachineInfo GetOrAdd(string machineName) => GetOrAdd(MachineName.From(machineName));
+
+    private MachineInfo GetOrAdd(MachineName machine)
     {
-        var info = FindPeer(machineName);
+        var info = FindPeer(machine);
         if (info == null)
         {
-            info = new MachineInfo { MachineName = machineName };
+            info = new MachineInfo { MachineName = machine.Value };
             Connections.Add(info);
         }
         return info;
-    }
-
-    /// <summary>
-    /// Normalizes an RdpHostedServers dictionary so all keys use canonical hostnames.
-    /// Returns an empty dictionary if the input is null.
-    /// </summary>
-    private static Dictionary<string, int> NormalizeRdpHostedServers(Dictionary<string, int>? raw)
-    {
-        if (raw == null || raw.Count == 0)
-            return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        return new Dictionary<string, int>(
-            raw.ToDictionary(
-                kv => MachineName.From(kv.Key).Canonical,
-                kv => kv.Value),
-            StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -880,20 +872,22 @@ public partial class MainWindow : Window
     /// or <see cref="MachineInfo.RdpClientName"/>).
     /// Falls back to DNS/IP-based msrdc matching for peers not found by earlier passes.
     /// </summary>
-    private Dictionary<string, int> BuildLocalRdpHostedServers()
+    private MachineDesktopMap BuildLocalRdpHostedServers()
     {
-        var connectedPeers = _networkManager!.ConnectedPeers.ToList();
+        var connectedPeers = _networkManager!.ConnectedMachines
+            .Select(machine => machine.Canonical)
+            .ToList();
         var map = RdpWindowLocator.GetRdpDesktopMap(connectedPeers);
         var peerAddresses = _networkManager.GetPeerAddresses();
         MergeMsrdcDesktopEntries(map, Connections, LocalName, peerAddresses);
-        return NormalizeRdpHostedServers(map);
+        return MachineDesktopMap.FromWire(map);
     }
 
     /// <summary>
     /// Builds the local RDP hosted servers map and caches it for use by
     /// the TreeWindow overlay (avoids re-enumerating windows on Win+Tab open).
     /// </summary>
-    private Dictionary<string, int> CacheAndReturnRdpMap()
+    private MachineDesktopMap CacheAndReturnRdpMap()
     {
         var map = BuildLocalRdpHostedServers();
         _cachedRdpMap = map;
@@ -995,22 +989,22 @@ public partial class MainWindow : Window
 
         // Track which windows and peers have been paired.
         var pairedWindows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var pairedPeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pairedPeers = new HashSet<MachineName>();
 
         // Pass 1: Match window titles directly against peer MachineName.
         // e.g. window "davris-0" matches peer DAVRIS-0.
         foreach (var peer in serverPeers)
         {
-            var normalizedPeerName = MachineName.From(peer.MachineName).Canonical;
+            var peerName = MachineName.From(peer.MachineName);
             foreach (var kv in msrdcMap)
             {
                 if (pairedWindows.Contains(kv.Key)) continue;
-                var normalizedTitle = MachineName.From(kv.Key).Canonical;
-                if (normalizedTitle.Equals(normalizedPeerName, StringComparison.OrdinalIgnoreCase))
+                var windowName = MachineName.From(kv.Key);
+                if (windowName.Equals(peerName))
                 {
-                    rdpDesktopMap[normalizedPeerName] = kv.Value;
+                    rdpDesktopMap[peerName.Canonical] = kv.Value;
                     pairedWindows.Add(kv.Key);
-                    pairedPeers.Add(normalizedPeerName);
+                    pairedPeers.Add(peerName);
                     AppLogger.Log($"MergeMsrdc: paired '{peer.MachineName}' with msrdc window '{kv.Key}' (MachineName match) → desktop{kv.Value}");
                     break;
                 }
@@ -1022,7 +1016,7 @@ public partial class MainWindow : Window
         // title shows the friendly name (e.g. "davris-10"), and the DevBox reports its
         // friendly name from the Agent config. Ambiguity-guarded like Pass 3.
         var unmatchedDevBoxPeers = serverPeers
-            .Where(p => !pairedPeers.Contains(MachineName.From(p.MachineName).Canonical)
+            .Where(p => !pairedPeers.Contains(MachineName.From(p.MachineName))
                         && !string.IsNullOrEmpty(p.DevBoxFriendlyName))
             .ToList();
 
@@ -1038,10 +1032,10 @@ public partial class MainWindow : Window
             var normalizedTitle = MachineName.From(kv.Key).Canonical;
             if (byFriendlyName.TryGetValue(normalizedTitle, out var peer))
             {
-                var normalizedPeerName = MachineName.From(peer.MachineName).Canonical;
-                rdpDesktopMap[normalizedPeerName] = kv.Value;
+                var peerName = MachineName.From(peer.MachineName);
+                rdpDesktopMap[peerName.Canonical] = kv.Value;
                 pairedWindows.Add(kv.Key);
-                pairedPeers.Add(normalizedPeerName);
+                pairedPeers.Add(peerName);
                 AppLogger.Log($"MergeMsrdc: paired '{peer.MachineName}' with msrdc window '{kv.Key}' (DevBoxFriendlyName '{peer.DevBoxFriendlyName}' match) → desktop{kv.Value}");
             }
         }
@@ -1051,13 +1045,13 @@ public partial class MainWindow : Window
         if (peerAddresses.Count > 0)
         {
             // Build reverse map: IP → peer MachineName (only for unmatched server peers).
-            var ipToPeer = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var ipToPeer = new Dictionary<string, MachineName>(StringComparer.OrdinalIgnoreCase);
             foreach (var peer in serverPeers)
             {
-                var normalizedPeerName = MachineName.From(peer.MachineName).Canonical;
-                if (pairedPeers.Contains(normalizedPeerName)) continue;
+                var peerName = MachineName.From(peer.MachineName);
+                if (pairedPeers.Contains(peerName)) continue;
                 if (peerAddresses.TryGetValue(peer.MachineName, out var peerIp))
-                    ipToPeer.TryAdd(peerIp, normalizedPeerName);
+                    ipToPeer.TryAdd(peerIp, peerName);
             }
 
             foreach (var kv in msrdcMap)
@@ -1068,11 +1062,11 @@ public partial class MainWindow : Window
 
                 if (ipToPeer.TryGetValue(resolvedIp, out var matchedPeerName))
                 {
-                    rdpDesktopMap[matchedPeerName] = kv.Value;
+                    rdpDesktopMap[matchedPeerName.Canonical] = kv.Value;
                     pairedWindows.Add(kv.Key);
                     pairedPeers.Add(matchedPeerName);
                     ipToPeer.Remove(resolvedIp);
-                    AppLogger.Log($"MergeMsrdc: paired '{matchedPeerName}' with msrdc window '{kv.Key}' (DNS→IP '{resolvedIp}' match) → desktop{kv.Value}");
+                    AppLogger.Log($"MergeMsrdc: paired '{matchedPeerName.Canonical}' with msrdc window '{kv.Key}' (DNS→IP '{resolvedIp}' match) → desktop{kv.Value}");
                 }
             }
         }
@@ -1094,13 +1088,13 @@ public partial class MainWindow : Window
                 var tcpByPid = getTcpByPids(relevantPids);
 
                 // Build reverse map: IP → peer MachineName (unmatched peers only).
-                var ipToPeerP4 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var ipToPeerP4 = new Dictionary<string, MachineName>(StringComparer.OrdinalIgnoreCase);
                 foreach (var peer in serverPeers)
                 {
-                    var normalizedPeerName = MachineName.From(peer.MachineName).Canonical;
-                    if (pairedPeers.Contains(normalizedPeerName)) continue;
+                    var peerName = MachineName.From(peer.MachineName);
+                    if (pairedPeers.Contains(peerName)) continue;
                     if (peerAddresses.TryGetValue(peer.MachineName, out var peerIp))
-                        ipToPeerP4.TryAdd(peerIp, normalizedPeerName);
+                        ipToPeerP4.TryAdd(peerIp, peerName);
                 }
 
                 foreach (var windowTitle in remainingWindows)
@@ -1113,11 +1107,11 @@ public partial class MainWindow : Window
                     {
                         if (ipToPeerP4.TryGetValue(remoteIp, out var matchedPeerName))
                         {
-                            rdpDesktopMap[matchedPeerName] = msrdcMap[windowTitle];
+                            rdpDesktopMap[matchedPeerName.Canonical] = msrdcMap[windowTitle];
                             pairedWindows.Add(windowTitle);
                             pairedPeers.Add(matchedPeerName);
                             ipToPeerP4.Remove(remoteIp);
-                            AppLogger.Log($"MergeMsrdc: paired '{matchedPeerName}' with msrdc window '{windowTitle}' (process PID {pid} TCP→IP '{remoteIp}' match) → desktop{msrdcMap[windowTitle]}");
+                            AppLogger.Log($"MergeMsrdc: paired '{matchedPeerName.Canonical}' with msrdc window '{windowTitle}' (process PID {pid} TCP→IP '{remoteIp}' match) → desktop{msrdcMap[windowTitle]}");
                             break;
                         }
                     }
@@ -1195,11 +1189,13 @@ public partial class MainWindow : Window
                 CurrentDesktop      = VirtualDesktopHelper.GetCurrentDesktopIndex(),
                 TotalDesktops       = totalDesktops,
                 IsRdpServer         = _isRdpServer,
-                RdpPeers            = _networkManager.ConnectedPeers.ToList(),
+                RdpPeers            = _networkManager.ConnectedMachines
+                    .Select(machine => machine.Canonical)
+                    .ToList(),
                 RdpClientName       = _isRdpServer ? RdpConnectionDetector.GetRdpClientName() : null,
                 DevBoxFriendlyName  = _isRdpServer ? RDP.DevBoxInfoProvider.GetDevBoxFriendlyName() : null,
                 RdpHostedServers    = _isRdpServer ? null
-                    : CacheAndReturnRdpMap(),
+                    : CacheAndReturnRdpMap().ToWire(),
                 DesktopNames        = desktopNames,
                 WallpaperThumbnails = wallpaperThumbnails,
                 WallpaperColors     = wallpaperColors

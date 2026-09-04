@@ -89,14 +89,14 @@ public class MachineInfo : INotifyPropertyChanged
         set { _devBoxFriendlyName = value; OnPropertyChanged(); }
     }
 
-    private Dictionary<string, int> _rdpHostedServers = new();
+    private MachineDesktopMap _rdpHostedServers = new();
 
     /// <summary>
     /// Only populated for RDP-client peers.  Maps server machine name (normalized) →
     /// local desktop index on which that server's mstsc window lives.
     /// This is broadcast by the client so every mesh node can construct the same tree.
     /// </summary>
-    public Dictionary<string, int> RdpHostedServers
+    public MachineDesktopMap RdpHostedServers
     {
         get => _rdpHostedServers;
         set { _rdpHostedServers = value; OnPropertyChanged(); }

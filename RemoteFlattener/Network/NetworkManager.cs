@@ -51,10 +51,11 @@ public sealed class NetworkManager : IDisposable
     private readonly INetworkLogger _logger;
 
     private string _password = string.Empty;
-    private List<string> _peerMachines = new();
+    private List<PeerTarget> _peerTargets = new();
 
     /// <summary>For testing: the filtered, deduplicated peer list built by Start().</summary>
-    internal IReadOnlyList<string> PeerMachines => _peerMachines;
+    internal IReadOnlyList<string> PeerMachines =>
+        _peerTargets.Select(target => target.Name.Value).ToList();
 
     /// <summary>
     /// For unit testing only: creates an instance with a preset password
@@ -89,12 +90,19 @@ public sealed class NetworkManager : IDisposable
     /// <summary>The machine name of this instance (used in authentication and state messages).</summary>
     public string LocalMachineName => _config.LocalMachineName;
 
+    /// <summary>The typed local machine identity used by internal routing.</summary>
+    public MachineName LocalMachine => MachineName.From(LocalMachineName);
+
     /// <summary>TCP port this node listens on and connects to.</summary>
     public int Port => _config.Port;
 
     /// <summary>Machine names of currently authenticated, connected peers.</summary>
     public IEnumerable<string> ConnectedPeers =>
         _connections.Values.Select(c => c.Machine.Canonical);
+
+    /// <summary>Typed identities of currently authenticated, connected peers.</summary>
+    public IEnumerable<MachineName> ConnectedMachines =>
+        _connections.Values.Select(c => c.Machine);
 
     /// <summary>
     /// Returns a mapping of normalized peer machine name → remote IP address string
@@ -117,27 +125,26 @@ public sealed class NetworkManager : IDisposable
     }
 
     /// <summary>Raised when a message arrives from a peer (on a background thread).</summary>
-    public event Action<string, NetworkMessage>? MessageReceived;
+    public event Action<MachineName, NetworkMessage>? MessageReceived;
     /// <summary>Raised when a peer finishes authenticating (on a background thread).</summary>
-    public event Action<string>? PeerConnected;
+    public event Action<MachineName>? PeerConnected;
     /// <summary>Raised when a peer connection closes (on a background thread).</summary>
-    public event Action<string>? PeerDisconnected;
+    public event Action<MachineName>? PeerDisconnected;
 
     public void Start(string password, IEnumerable<string> peerMachines)
     {
-        _password    = password;
-        _peerMachines = FilterPeerMachines(peerMachines, LocalMachineName);
+        _password = password;
+        _peerTargets = FilterPeerMachines(peerMachines, LocalMachineName)
+            .Select(machine => new PeerTarget(
+                MachineName.From(machine),
+                new MachineEndpoint(machine, Port)))
+            .ToList();
 
-        _logger.Log($"NetworkManager starting.  Local node: {LocalMachineName}.  Listening on port {Port}.  Outgoing peers: [{string.Join(", ", _peerMachines)}]");
+        _logger.Log($"NetworkManager starting.  Local node: {LocalMachineName}.  Listening on port {Port}.  Outgoing peers: [{string.Join(", ", PeerMachines)}]");
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => ListenLoopAsync(_cts.Token));
-        foreach (var machine in _peerMachines)
-        {
-            var target = new PeerTarget(
-                MachineName.From(machine),
-                new MachineEndpoint(machine, Port));
+        foreach (var target in _peerTargets)
             _ = Task.Run(() => OutgoingLoopAsync(target, _cts.Token));
-        }
     }
 
     /// <summary>
@@ -180,7 +187,7 @@ public sealed class NetworkManager : IDisposable
         {
             try
             {
-                PeerDisconnected?.Invoke(conn.Machine.Canonical);
+                PeerDisconnected?.Invoke(conn.Machine);
                 conn.Dispose();
             }
             catch { }
@@ -204,8 +211,10 @@ public sealed class NetworkManager : IDisposable
     /// so intermediary nodes can relay it onward.  Sets TargetMachine automatically.
     /// </summary>
     public async Task SendToPeerAsync(string machineName, NetworkMessage message)
+        => await SendToPeerAsync(MachineName.From(machineName), message);
+
+    internal async Task SendToPeerAsync(MachineName target, NetworkMessage message)
     {
-        var target = MachineName.From(machineName);
         message.TargetMachine = target.Canonical;
         PrepareForSend(message);
         MarkSeen(message.MessageId!);
@@ -281,17 +290,20 @@ public sealed class NetworkManager : IDisposable
     /// No-ops if the peer is already covered by the static peer list or already connected.
     /// </summary>
     public void ConnectToPeer(string machineName, string connectionAddress, int? port = null)
+        => ConnectToPeer(
+            MachineName.From(machineName),
+            new MachineEndpoint(connectionAddress, port ?? Port));
+
+    internal void ConnectToPeer(MachineName peerName, MachineEndpoint endpoint)
     {
         if (_cts == null) return; // network not started
-        var peerName = MachineName.From(machineName);
         // Static peer list already has a loop for this machine — don't duplicate.
-        if (_peerMachines.Any(p => peerName.CanonicalEqualsObservedValue(p)))
+        if (_peerTargets.Any(target =>
+                peerName.CanonicalEqualsObservedValue(target.Name.Value)))
             return;
         if (_connections.ContainsKey(peerName)) return;
-        _logger.Log($"ConnectToPeer: starting connector for {machineName} via {connectionAddress}.");
-        var target = new PeerTarget(
-            peerName,
-            new MachineEndpoint(connectionAddress, port ?? Port));
+        _logger.Log($"ConnectToPeer: starting connector for {peerName.Value} via {endpoint.Host}.");
+        var target = new PeerTarget(peerName, endpoint);
         _ = Task.Run(() => OutgoingLoopAsync(target, _cts.Token));
     }
 
@@ -431,7 +443,7 @@ public sealed class NetworkManager : IDisposable
             registered = true;
 
             _logger.Log($"Peer {remoteMachine.Value.Canonical} authenticated and connected ({(outgoing ? "outgoing" : "incoming")}).");
-            PeerConnected?.Invoke(remoteMachine.Value.Canonical);
+            PeerConnected?.Invoke(remoteMachine.Value);
 
             // Read messages until the connection closes.
             string? line;
@@ -460,7 +472,7 @@ public sealed class NetworkManager : IDisposable
                 {
                     var remoteName = remoteMachine.Value.Canonical;
                     _logger.Log($"Received {msg.Type} from {remoteName} (origin: {msg.OriginMachine ?? remoteName}).");
-                    MessageReceived?.Invoke(remoteName, msg);
+                    MessageReceived?.Invoke(remoteMachine.Value, msg);
                 }
 
                 // Relay to all other directly connected peers (mesh forwarding).
@@ -486,7 +498,7 @@ public sealed class NetworkManager : IDisposable
             {
                 removed.Dispose();
                 _logger.Log($"Peer {remoteMachine.Value.Canonical} disconnected.");
-                PeerDisconnected?.Invoke(remoteMachine.Value.Canonical);
+                PeerDisconnected?.Invoke(remoteMachine.Value);
             }
             else
             {

@@ -24,12 +24,6 @@ public readonly struct MachineName : IEquatable<MachineName>
     /// <summary>The current canonical identity used for lookups and routing.</summary>
     public string Canonical => _canonical ?? string.Empty;
 
-    /// <summary>
-    /// The current display representation. This intentionally remains the observed
-    /// value so introducing this type does not alter existing UI text.
-    /// </summary>
-    public string DisplayName => Value;
-
     public static MachineName From(string? value) => new(value ?? string.Empty);
 
     public bool Matches(string? other) => Equals(From(other));
